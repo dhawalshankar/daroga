@@ -196,22 +196,32 @@ If you have the AWS CLI configured on your computer (`aws configure`), DAROGA au
 
 DAROGA works directly on your project folder **without needing you to copy or move files**. Just point it to your project path:
 
-### 1. The Standard Command (Audit + Code + Push + Autonomous Pull Request)
-This is what most customers and interviewers want to see. In a single command:
+### 1. The Standard Command (Audit + Code + Local Feature Branch)
+This runs the full autonomous migration pipeline on your local machine with zero blast radius:
 1. It inspects your application architecture and live EC2 cloud infrastructure.
 2. Synthesizes all serverless adapters, SAM templates, and console deployment guides.
-3. Creates an isolated migration feature branch.
-4. Pushes the branch to your Git remote (`origin`).
-5. **Autonomously raises a live GitHub Pull Request** using the GitHub CLI (`gh pr create`) so your team can review and merge with 1 click!
+3. Creates an isolated migration feature branch (`lambda-migration-<timestamp>`).
+4. Commits all generated deliverables safely to the feature branch locally without modifying your remote repository.
 
 ```bash
-# Push branch & raise live GitHub Pull Request automatically:
-daroga "C:\Users\YourName\Desktop\code\my-application" --push
+daroga "C:\Users\YourName\Desktop\code\my-application"
 ```
 
 ---
 
-### 2. Live In-Guest EC2 VM Telemetry (`--vm-access`)
+### 2. Full Autonomous Migration with Automated Push & Pull Request (`--push`)
+If you want DAROGA to automatically publish the branch to GitHub/GitLab and output a ready-to-merge Pull Request:
+
+```bash
+# Push branch & output live GitHub Pull Request automatically:
+daroga "C:\Users\YourName\Desktop\code\my-application" --push
+```
+- Pushes the feature branch to your Git remote (`origin`).
+- Autonomously raises a live GitHub Pull Request or outputs the direct 1-click PR link for your team to review and merge!
+
+---
+
+### 3. Live In-Guest EC2 VM Telemetry (`--vm-access`)
 If you want DAROGA to look inside your running EC2 instance to discover active background processes, open network sockets, and running services:
 
 ```bash
@@ -223,7 +233,7 @@ daroga "C:\path\to\my-application" --vm-access
 
 ---
 
-### 3. The "Report Only" Command (No Code Changes, No Git Push)
+### 4. The "Report Only" Command (No Code Changes, No Git Push)
 Use this if you just want an executive feasibility report and cost breakdown to present to your manager, without modifying code or touching Git:
 
 ```bash
@@ -233,17 +243,7 @@ daroga "C:\path\to\my-application" --audit-only
 
 ---
 
-### 3. The "Local Only" Command (No GitHub Push)
-Use this if you want DAROGA to write all the serverless code and create the feature branch on your laptop, but you **do not** want it to push to GitHub yet:
-
-```bash
-daroga "C:\path\to\my-application" --no-push
-```
-- **Result**: All files and Git commits remain safely on your local machine.
-
----
-
-### 4. The 100% Free Offline Mode (Zero API Calls, Zero Cost)
+### 5. The 100% Free Offline Mode (Zero API Calls, Zero Cost)
 Use this if you do not have an OpenAI or Groq API key, or if your company policy prohibits sending code to external AI APIs:
 
 ```bash
@@ -303,10 +303,11 @@ When DAROGA finishes, you receive 5 key deliverables:
 
 | I want to... | Command to run |
 |---|---|
-| Do everything (Audit, Code, Branch & Push to GitHub) | `daroga "C:\path\to\project"` |
-| Get only the executive assessment report | `daroga "C:\path\to\project" --audit-only` |
-| Generate files locally without pushing to GitHub | `daroga "C:\path\to\project" --no-push` |
-| Run for free with no AI API key | `daroga "C:\path\to\project" --offline` |
+| Standard migration (Audit, Code & Local Feature Branch Commit) | `daroga "C:\path\to\project"` |
+| Full migration with automated GitHub push & Pull Request link | `daroga "C:\path\to\project" --push` |
+| Deep In-Guest VM telemetry (listening ports, services, Docker) | `daroga "C:\path\to\project" --vm-access` |
+| Get only the executive assessment report (Read-only) | `daroga "C:\path\to\project" --audit-only` |
+| Run for free with no AI API key (Offline Heuristic Mode) | `daroga "C:\path\to\project" --offline` |
 | Specify an AWS region | `daroga "C:\path\to\project" --region us-east-1` |
 | Inspect open Chrome AWS Console tabs | Open Chrome on port 9222, then run `daroga "C:\path\to\project"` |
 

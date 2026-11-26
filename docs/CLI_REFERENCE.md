@@ -36,10 +36,10 @@ flowchart TD
     OfflineEngine & LLMEngine --> CodeGen["Generate Deliverables:<br/>• lambda_main adapter<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md & MIGRATION_REPORT.md"]
 
     CodeGen --> Stage["Stage & Commit to lambda-migration-*"]
-    Stage --> PushCheck{"Is --push enabled? (Default: Yes)"}
+    Stage --> PushCheck{"Is --push enabled? (Default: No)"}
 
-    PushCheck -- "Yes" --> Push["git push -u origin <branch><br/>• Construct 1-Click GitHub PR URL"]
-    PushCheck -- "No" --> LocalOnly["Keep Changes Local on Feature Branch"]
+    PushCheck -- "Yes (--push)" --> Push["git push -u origin <branch><br/>• Construct 1-Click GitHub PR URL"]
+    PushCheck -- "No (default)" --> LocalOnly["Keep Changes Local on Feature Branch"]
 
     Push & LocalOnly --> Restore["Restore Active Workspace to main (100% Untouched)"]
     Restore --> Summary["Print Execution Summary & PR Link"]
@@ -53,8 +53,8 @@ flowchart TD
 - `repo` *(Optional, Default: `.`)*: The absolute or relative file path to the local Git repository you want to inspect and migrate.
 
 ### Git & Remote Options
-- `--push`: *(Default: Enabled)* Automatically stages all generated artifacts, commits to an isolated feature branch (`lambda-migration-<timestamp>`), pushes to the remote Git repository, and prints the GitHub Pull Request URL.
-- `--no-push`: Disables remote pushing. Changes are staged and committed strictly to the local feature branch without touching the remote.
+- `--push`: *(Opt-in, Default: Disabled)* Automatically stages all generated artifacts, commits to an isolated feature branch (`lambda-migration-<timestamp>`), pushes to the remote Git repository, and prints the GitHub Pull Request URL.
+- `--no-push`: *(Default: Enabled)* Keeps changes staged and committed strictly to the local feature branch without touching the remote repository.
 - `--remote <NAME>`: *(Default: `origin`)* Name of the remote Git repository to push to.
 
 ### Audit & Inspection Options
@@ -101,23 +101,29 @@ flowchart TD
 
 ## 4. Usage Examples
 
-### Example 1: Full Autonomous Migration with Automated Push
+### Example 1: Standard Autonomous Migration (Local Feature Branch)
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service"
 ```
-**Action**: Creates `lambda-migration-<timestamp>`, audits the repo and AWS infrastructure, writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`, serverless adapters, and SAM template, commits, pushes to `origin`, and outputs the GitHub PR link.
+**Action**: Creates `lambda-migration-<timestamp>`, audits the repo and AWS infrastructure, writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`, serverless adapters, and SAM template, and commits locally to the feature branch. Leaves working branch (`main`) untouched.
 
-### Example 2: Read-Only Audit (No Code Generation or Git Branching)
+### Example 2: Full Autonomous Migration with Automated Remote Push
+```bash
+daroga "C:\Users\username\Desktop\code\billing-service" --push
+```
+**Action**: Performs full migration, commits to `lambda-migration-<timestamp>`, pushes to `origin`, and outputs the 1-click GitHub PR link.
+
+### Example 3: Read-Only Audit (No Code Generation or Git Branching)
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service" --audit-only
 ```
 **Action**: Scans codebase, queries live AWS EC2 state, inspects browser console, and writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`. Zero code changes and zero Git branches created.
 
-### Example 3: Local-Only Migration (No Remote Push)
+### Example 4: In-Guest EC2 VM Inspection via SSM or SSH
 ```bash
-daroga "C:\Users\username\Desktop\code\billing-service" --no-push
+daroga "C:\Users\username\Desktop\code\billing-service" --vm-access
 ```
-**Action**: Performs full migration and commits changes locally to `lambda-migration-<timestamp>` without pushing to GitHub.
+**Action**: Runs non-destructive guest VM telemetry extraction via SSM or SSH to verify listening sockets, services, Docker containers, and OS configs.
 
 ### Example 4: Zero-API Offline Mode
 ```bash

@@ -93,7 +93,7 @@ daroga "C:\path\to\your-ec2-project"
 | **6. 23-Section Report** | Compiles exhaustive migration audit with exact AWS Console click paths and AWS CLI commands. | `EC2_TO_LAMBDA_MIGRATION_REPORT.md` |
 | **7. Code & IaC Synthesis** | Generates serverless entrypoint adapter, Graviton build script, and AWS SAM template. | `lambda_main.go`, `build_lambda.sh`, `template.yaml` |
 | **8. Operator Guide** | Details exact environment variables, IAM roles, and API Gateway trigger configurations for human review. | `USER.md` & `MIGRATION_REPORT.md` |
-| **9. Git Automation & PR** | Creates isolated branch, commits artifacts, pushes to `origin`, and prints GitHub Pull Request link. | `lambda-migration-<timestamp>` |
+| **9. Git Automation & PR** | Creates isolated branch, commits artifacts, and optionally pushes to `origin` with `--push` to print GitHub Pull Request link. | `lambda-migration-<timestamp>` |
 
 ---
 
@@ -223,11 +223,11 @@ This registers the global executables `daroga` and `aws-migrator`.
 Point DAROGA to any Git repository on your machine:
 
 ```bash
-# Full migration: Audit + Code Generation + Git Branch Push
+# Standard migration: Audit + Code Generation + Local Feature Branch Commit
 daroga "C:\Users\username\Desktop\code\my-ec2-project"
 
-# Linux / macOS
-daroga /home/ubuntu/projects/billing-service
+# Full migration with automated remote push to GitHub/GitLab:
+daroga "C:\Users\username\Desktop\code\my-ec2-project" --push
 ```
 
 ### Command Options
@@ -245,8 +245,8 @@ usage: daroga [repo] [--push | --no-push] [--remote REMOTE]
 | Flag | Description | Default |
 |---|---|---|
 | `repo` | Path to target Git repository | `.` (Current directory) |
-| `--push` | Push feature branch to remote git repository and output PR URL | `True` (Enabled) |
-| `--no-push` | Keep changes committed strictly to local feature branch | `False` |
+| `--push` | Push feature branch to remote git repository and output PR URL | `False` (Disabled / Opt-in) |
+| `--no-push` | Keep changes committed strictly to local feature branch | `True` (Default) |
 | `--remote` | Remote repository name to push to | `origin` |
 | `--audit-only` | Run read-only audit to produce report without code generation or branching | `False` |
 | `--offline` | Run offline using deterministic architecture engine (zero API calls) | `False` |
@@ -262,17 +262,17 @@ usage: daroga [repo] [--push | --no-push] [--remote REMOTE]
 ### Common Workflows
 
 ```bash
-# 1. Standard end-to-end autonomous migration with remote push
+# 1. Standard end-to-end autonomous migration (local branch commit)
 daroga /path/to/my-ec2-service
 
-# 2. Migration with live In-Guest EC2 VM inspection (SSM / SSH)
+# 2. Migration with automatic remote push to GitHub & PR URL generation
+daroga /path/to/my-ec2-service --push
+
+# 3. Migration with live In-Guest EC2 VM inspection (SSM / SSH)
 daroga /path/to/my-ec2-service --vm-access
 
-# 3. Specify explicit SSH key for VM inspection
+# 4. Specify explicit SSH key for VM inspection
 daroga /path/to/my-ec2-service --vm-access --ssh-key ~/.ssh/my-key.pem
-
-# 4. Local-only migration (no git push)
-daroga /path/to/my-ec2-service --no-push
 
 # 5. Read-only architectural audit (no code generation, no git branch)
 daroga /path/to/my-ec2-service --audit-only
