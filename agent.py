@@ -956,7 +956,7 @@ def run_agent_loop(
         f"1. Serverless adapter (`backend/lambda_main.go` for Go / `lambda_function.py` for Python / `lambda.js` for Node).\n"
         f"2. Build script (`backend/build_lambda.sh`) if Go.\n"
         f"3. Production AWS SAM specification (`template.yaml`).\n"
-        f"4. AWS Console Operator Deployment Guide (`USER.md`).\n\n"
+        f"4. AWS Console Operator Deployment Guide (`USER.md`) — MUST be authored via write_file(path='USER.md', content=...), NEVER as raw chat text!\n\n"
         f"When written, immediately call `finish` with verdict '{getattr(audit_res, 'verdict', 'MIGRATE')}'. Be fast and concise!"
     )
 
@@ -996,8 +996,27 @@ def run_agent_loop(
         messages.append(assistant_entry)
 
         if not choice.tool_calls:
-            log_warn("Agent concluded turn without tool invocation.")
-            return None
+            if choice.content and len(choice.content) > 150 and not (repo / "USER.md").is_file():
+                log_step("GENERATING", "Capturing synthesized Operator Guide directly into 'USER.md'...", Colors.YELLOW)
+                (repo / "USER.md").write_text(choice.content.strip(), encoding="utf-8")
+                log_success("Saved artifact: 'USER.md'")
+
+            backend_rel = "backend" if (repo / "backend").is_dir() else "."
+            backend_dir = repo / backend_rel
+            has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+            has_sam = (repo / "template.yaml").is_file()
+            has_user = (repo / "USER.md").is_file()
+
+            if has_adapter and has_sam and has_user:
+                log_success("All essential migration artifacts verified on disk!")
+                return {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
+
+            log_warn("Agent replied with message text instead of invoking tools. Prompting for completion...")
+            messages.append({
+                "role": "user",
+                "content": "Please invoke 'write_file' for any remaining files (e.g. 'USER.md') or invoke 'finish' with verdict.",
+            })
+            continue
 
         completion_data = None
         for tc in choice.tool_calls:
