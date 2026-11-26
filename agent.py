@@ -1409,6 +1409,21 @@ Examples:
         help="Run in read-only audit mode (generates EC2_TO_LAMBDA_MIGRATION_REPORT.md without git branch or code modifications)",
     )
     parser.add_argument(
+        "--vm-access",
+        action="store_true",
+        help="Enable in-guest VM inspection via AWS Systems Manager (SSM) or SSH",
+    )
+    parser.add_argument(
+        "--ssh-key",
+        default=None,
+        help="Optional path to private SSH key for in-guest VM inspection (.pem / .id_rsa)",
+    )
+    parser.add_argument(
+        "--ssh-user",
+        default="ubuntu",
+        help="SSH username for in-guest inspection (default: 'ubuntu')",
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=DEFAULT_MAX_TURNS,
@@ -1492,6 +1507,29 @@ Examples:
                 output_report_path=out_p,
             )
             audit_res = orchestrator.run_audit()
+
+            # Optional In-Guest VM Inspection if requested via --vm-access or --ssh-key
+            if args.vm_access or args.ssh_key:
+                log_step("VM-ACCESS", "Executing non-destructive in-guest VM inspection via AWS Systems Manager / SSH...", Colors.CYAN)
+                try:
+                    from daroga.vm_inspector import VMInspector
+                    vm_insp = VMInspector(region=audit_res.aws.identity.region if audit_res and audit_res.aws else args.region)
+                    target_inst = audit_res.aws.instances[0] if (audit_res and audit_res.aws and audit_res.aws.instances) else None
+                    if target_inst:
+                        guest_rep = vm_insp.inspect_instance(
+                            instance_id=target_inst.instance_id,
+                            public_ip=target_inst.public_ip,
+                            ssh_key_path=args.ssh_key,
+                            ssh_user=args.ssh_user,
+                        )
+                        if guest_rep.accessible:
+                            log_success(f"In-Guest VM Telemetry captured via {guest_rep.access_method}: OS '{guest_rep.os_release}', {len(guest_rep.active_services)} active services.")
+                        else:
+                            log_warn(guest_rep.error_message or "In-guest inspection did not connect.")
+                    else:
+                        log_warn("No running EC2 instance detected to execute in-guest inspection against.")
+                except Exception as vm_err:
+                    log_warn(f"In-guest VM inspection skipped: {vm_err}")
         else:
             log_warn("DarogaOrchestrator not loaded. Proceeding with heuristic code generation.")
 
