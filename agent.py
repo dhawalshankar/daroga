@@ -170,51 +170,28 @@ BLOCKED_COMMAND_KEYWORDS = (
 SYSTEM_PROMPT = """You are an Autonomous Cloud Migration Agent specializing in migrating EC2-hosted server applications to AWS Lambda Serverless architecture.
 
 MISSION:
-Your sole objective is to MIGRATE the target backend service from a legacy EC2 continuous VM model into production-ready AWS Lambda serverless infrastructure.
-Every user running this tool expects code artifacts and SAM templates. You must ALWAYS generate the Lambda adapter, SAM template, and documentation!
+Your sole objective is to GENERATE production-ready AWS Lambda serverless infrastructure and code adapters for the target repository.
+All architecture scanning, AST parsing, language detection, and in-guest VM telemetry have ALREADY been executed deterministically and are provided in your prompt.
 
-DIRECTORY & REPOSITORY SCOPE:
-- If the repository contains separate frontend and backend directories (e.g. `frontend/` and `backend/` or `client/` and `server/`):
-  * Focus 100% of your attention on the `backend/` directory!
-  * The frontend (Next.js, React, HTML) remains unchanged (hosted on S3, Amplify, or Vercel).
-  * The backend API server is what ran on the EC2 VM and is what belongs on AWS Lambda.
-- Never inspect or touch frontend UI assets, page components, or build bundles.
+ZERO-READ PROTOCOL (STRICT):
+- You are a PURE CODE GENERATOR.
+- You do NOT read files or explore the repository. All architecture findings, ports, and entrypoint source snippets are already provided in your initial prompt.
+- Your only tools are `write_file` and `finish`.
+- In each turn, write one of the required migration deliverables using `write_file`.
+- Once all required deliverables are written, immediately call `finish`.
 
-EFFICIENCY & FAST GENERATION PROTOCOL (STRICT):
-- DO NOT read entire large files or loop through `read_file` or `search` calls!
-- You have at most 2 turns for inspection:
-  * Turn 1: `read_file` on `backend/main.go` or `backend/app.py` (first 100-200 lines only).
-  * Turn 2 onwards: IMMEDIATELY start generating artifacts using `write_file`!
-- REQUIRED DELIVERABLES YOU MUST WRITE IN ORDER:
-  1. `write_file`: Serverless adapter (`backend/lambda_main.go` for Go, `lambda_function.py` for Python, `lambda.js` for Node.js).
-  2. `write_file`: Build script if Go (`backend/build_lambda.sh`).
-  3. `write_file`: AWS SAM Template (`template.yaml`).
-  4. `write_file`: AWS Console Operator Guide (`USER.md`).
-- ONCE THOSE FILES ARE WRITTEN:
-  Immediately call `finish` with `{"verdict": "migrate", "summary": "..."}`!
-- Do NOT search for lines or wander through the codebase. You already know the architecture from Phase 1 audit. Generate the deliverables immediately!
-
-FROM EC2 VM TO AWS LAMBDA (WHAT CHANGES):
-- On EC2, the service ran as a continuous process listening on a TCP port (`http.ListenAndServe`, `app.run`, etc.).
-- In AWS Lambda, continuous sockets are replaced by an event-driven AWS API Gateway trigger invoking the Lambda handler.
-- What you must create:
-  1. Serverless Adapter / Entrypoint:
-     - Golang: Create `backend/lambda_main.go` wrapping the HTTP router with `github.com/aws/aws-lambda-go/lambda` or API proxy.
-     - Python: Create `lambda_function.py` wrapping WSGI/ASGI apps with `apig_wsgi` or `mangum`.
-     - Node.js: Create `lambda.js` wrapping Express/Fastify with `@vendia/serverless-express`.
-  2. AWS SAM Infrastructure (`template.yaml`):
-     - `AWS::Serverless::Function` resource definition with `provided.al2023` (Go), `python3.12` (Python), or `nodejs20.x`.
-     - HTTP API Gateway events (`/{proxy+}`).
-     - Environment variables and architecture (`arm64`).
-  3. Technical Assessment (`MIGRATION_REPORT.md`):
-     - Document the architectural transition from EC2 to Lambda.
-     - Cost savings (24/7 EC2 instance hourly cost vs. Lambda 1M free requests + pay-per-millisecond).
-  4. Step-by-Step AWS Console Guide (`USER.md`):
-     - Explicit step-by-step clicks for deploying and testing in the AWS Lambda & API Gateway Management Console.
+DELIVERABLES TO GENERATE:
+1. Serverless Adapter (e.g. `lambda_main.go` for Go, `lambda_function.py` for Python, `lambda.js` for Node.js):
+   - Wrap existing router/app with serverless event handler.
+2. Build Script (if Go):
+   - `build_lambda.sh` cross-compiling the Linux ARM64 binary (`GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap .`).
+3. AWS SAM Template (`template.yaml`):
+   - `AWS::Serverless::Function` with arm64 architecture, correct runtime (`provided.al2023`, `python3.12`, `nodejs20.x`), CodeUri, and HTTP API Gateway event triggers (`/{proxy+}`).
+4. Operator Deployment Guide (`USER.md`):
+   - Clear AWS Console steps for environment variables, IAM roles, API Gateway triggers, and testing.
 
 DECISION & COMPLETION:
-- Verdict is always `migrate` (or `partial` if secondary background workers are decoupled).
-- Always call `finish` when artifacts are created and validated.
+- Call `finish` immediately once deliverables are written.
 """
 
 # ==============================================================================
@@ -267,6 +244,37 @@ TOOLS = [
         "Executes a deterministic safety-whitelisted validation command (py_compile, pytest, sam validate, node --check).",
         {"command": {"type": "string", "description": "Command string to execute"}},
         ["command"],
+    ),
+    _tool_spec(
+        "finish",
+        "Signals completion of the migration evaluation and generation process.",
+        {
+            "verdict": {
+                "type": "string",
+                "enum": [
+                    "migrate", "partial", "do_not_migrate",
+                    "MIGRATE", "PARTIAL", "DO_NOT_MIGRATE",
+                    "MIGRATE (WITH DECOUPLING)", "migrate (with decoupling)",
+                    "NOT RECOMMENDED", "not recommended",
+                ],
+                "description": "Architectural migration verdict",
+            },
+            "summary": {"type": "string", "description": "Executive summary of migration findings and actions"},
+        },
+        ["verdict", "summary"],
+    ),
+]
+
+# Dedicated Write-Only Toolset for Pure Code Generation (Zero-Read Architecture)
+CODEGEN_TOOLS = [
+    _tool_spec(
+        "write_file",
+        "Writes or overwrites a file inside the target repository with given UTF-8 content.",
+        {
+            "path": {"type": "string", "description": "Relative path to target file"},
+            "content": {"type": "string", "description": "Complete text content to write"},
+        },
+        ["path", "content"],
     ),
     _tool_spec(
         "finish",
@@ -394,8 +402,9 @@ class UnifiedAIClient:
         else:
             raise ValueError(f"Unsupported provider: '{self.provider}'. Supported: groq, openai, gemini, claude, xai, ollama, offline, custom")
 
-    def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
+    def chat_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
+        active_tools = tools if tools is not None else CODEGEN_TOOLS
         if self.mode == "openai_compat":
             # Strict Sliding Window Context Compaction for 8,000 TPM rate limits:
             # Keep system message, user prompt, and at most the last 4 turns (assistant + tool).
@@ -445,7 +454,7 @@ class UnifiedAIClient:
             resp = self.openai_client.chat.completions.create(
                 model=self.model,
                 messages=cleaned_messages,
-                tools=TOOLS,
+                tools=active_tools,
                 tool_choice="auto",
                 temperature=0.1,
                 max_tokens=1500,
@@ -510,7 +519,7 @@ class UnifiedAIClient:
                     "description": t["function"]["description"],
                     "input_schema": t["function"]["parameters"],
                 }
-                for t in TOOLS
+                for t in active_tools
             ]
 
             resp = self.anthropic_client.messages.create(
@@ -851,12 +860,12 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
 # ==============================================================================
 # Autonomous LLM Reasoning Loop
 # ==============================================================================
-def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]]) -> NormalizedResponse:
+def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> NormalizedResponse:
     """Robust AI completion call with exponential backoff on rate limits."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            return client.chat_completion(messages)
+            return client.chat_completion(messages, tools=tools)
         except Exception as e:
             err_msg = str(e)
             if hasattr(e, "response") and hasattr(e.response, "text"):
@@ -945,8 +954,41 @@ def run_agent_loop(
                 except Exception:
                     pass
 
+    # Dynamic project & runtime resolution (Project-Agnostic Engine)
+    rep = getattr(audit_res, "repo", None)
+    target_runtime = (getattr(audit_res, "target_runtime", "") or (rep.runtime if rep else "python")).lower()
+    target_service_dir = getattr(rep, "target_service_directory", ".") if rep else ("backend" if (repo / "backend").is_dir() else ".")
+    prefix = f"{target_service_dir}/" if target_service_dir != "." else ""
+
+    if target_runtime == "go":
+        adapter_file = f"{prefix}lambda_main.go"
+        build_file = f"{prefix}build_lambda.sh"
+        runtime_desc = "Golang ARM64 custom runtime adapter (provided.al2023) and Linux bootstrap build script"
+    elif target_runtime == "python":
+        adapter_file = f"{prefix}lambda_function.py"
+        build_file = None
+        runtime_desc = "Python 3.12 serverless handler (Mangum / apig_wsgi for WSGI/ASGI)"
+    elif target_runtime in ("node", "javascript", "typescript"):
+        adapter_file = f"{prefix}lambda.js"
+        build_file = None
+        runtime_desc = "Node.js 20.x serverless handler (@vendia/serverless-express for Express/Fastify)"
+    else:
+        adapter_file = f"{prefix}lambda_function.py"
+        build_file = None
+        runtime_desc = f"{target_runtime} serverless entrypoint"
+
+    deliverables = [
+        f"1. Serverless adapter (`{adapter_file}`) — {runtime_desc}",
+    ]
+    if build_file:
+        deliverables.append(f"2. Build script (`{build_file}`) — Linux ARM64 compilation script")
+    deliverables.append(f"{len(deliverables) + 1}. Production AWS SAM specification (`template.yaml`) — HTTP API Gateway v2, arm64 Graviton, CodeUri: '{prefix or '.'}'")
+    deliverables.append(f"{len(deliverables) + 1}. AWS Console Operator Deployment Guide (`USER.md`) — step-by-step setup manual")
+
+    deliverables_str = "\n".join(deliverables)
+
     user_instruction = (
-        f"Repository '{repo.name}' has been deterministically scanned and audited with the following findings:\n"
+        f"Project '{repo.name}' has been deterministically scanned and audited with the following findings:\n"
         f"{audit_summary_str}\n\n"
     )
     if entrypoint_code:
@@ -955,13 +997,11 @@ def run_agent_loop(
             f"```\n{entrypoint_code}\n```\n\n"
         )
     user_instruction += (
-        f"INSTRUCTION: You do NOT need to explore or read files repeatedly. The architecture, entrypoints, and runtime are already verified above.\n"
-        f"Generate the production deliverables immediately using `write_file` in this exact order:\n"
-        f"1. Serverless adapter (`backend/lambda_main.go` for Go / `lambda_function.py` for Python / `lambda.js` for Node).\n"
-        f"2. Build script (`backend/build_lambda.sh`) if Go.\n"
-        f"3. Production AWS SAM specification (`template.yaml`).\n"
-        f"4. AWS Console Operator Deployment Guide (`USER.md`) — MUST be authored via write_file(path='USER.md', content=...), NEVER as raw chat text!\n\n"
-        f"When written, immediately call `finish` with verdict '{getattr(audit_res, 'verdict', 'MIGRATE')}'. Be fast and concise!"
+        f"INSTRUCTION (ZERO-READ PURE CODE GENERATION PROTOCOL):\n"
+        f"All code and infrastructure inspection has ALREADY been executed deterministically above.\n"
+        f"You do NOT need to read or explore any files. Your ONLY tool is `write_file` to author the production deliverables:\n"
+        f"{deliverables_str}\n\n"
+        f"Generate these files using `write_file`, then immediately call `finish` with verdict '{getattr(audit_res, 'verdict', 'MIGRATE')}'. Be fast, accurate, and concise!"
     )
 
     messages: List[Dict[str, Any]] = [
@@ -971,20 +1011,17 @@ def run_agent_loop(
 
     log_step("AGENT", f"Session active: provider '{client.provider.upper()}' | model '{client.model}' (Max turns: {max_turns})")
 
-    exploratory_count = 0
-
     for turn in range(1, max_turns + 1):
         log_step("AGENT", f"Turn {turn}/{max_turns}: Reasoning with {client.provider.upper()} ({client.model})...", Colors.BLUE)
         try:
-            response = call_ai_with_retry(client, messages)
+            response = call_ai_with_retry(client, messages, tools=CODEGEN_TOOLS)
         except Exception as err:
-            backend_rel = "backend" if (repo / "backend").is_dir() else "."
-            backend_dir = repo / backend_rel
-            has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+            has_adapter = (repo / adapter_file).is_file()
+            has_build = (repo / build_file).is_file() if build_file else True
             has_sam = (repo / "template.yaml").is_file()
             has_user = (repo / "USER.md").is_file()
-            if has_adapter and has_sam and has_user:
-                log_success("All migration deliverables verified on disk before API interruption!")
+            if has_adapter and has_build and has_sam and has_user:
+                log_success(f"All essential migration deliverables for {target_runtime.upper()} verified on disk!")
                 return {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
             log_error(f"Aborting session due to API failure: {err}")
             return None
@@ -1013,14 +1050,13 @@ def run_agent_loop(
                 (repo / "USER.md").write_text(choice.content.strip(), encoding="utf-8")
                 log_success("Saved artifact: 'USER.md'")
 
-            backend_rel = "backend" if (repo / "backend").is_dir() else "."
-            backend_dir = repo / backend_rel
-            has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+            has_adapter = (repo / adapter_file).is_file()
+            has_build = (repo / build_file).is_file() if build_file else True
             has_sam = (repo / "template.yaml").is_file()
             has_user = (repo / "USER.md").is_file()
 
-            if has_adapter and has_sam and has_user:
-                log_success("All essential migration artifacts verified on disk!")
+            if has_adapter and has_build and has_sam and has_user:
+                log_success(f"All essential migration deliverables for {target_runtime.upper()} verified on disk!")
                 return {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
 
             log_warn("Agent replied with message text instead of invoking tools. Prompting for completion...")
@@ -1052,18 +1088,6 @@ def run_agent_loop(
             if func_name == "finish":
                 completion_data = args
                 tool_output = "Migration finalized."
-            elif func_name in ("list_files", "read_file", "search"):
-                exploratory_count += 1
-                if exploratory_count > 2:
-                    log_warn("Exploratory budget exhausted - prompting agent to generate deliverables.")
-                    tool_output = (
-                        "INSPECTION BUDGET EXHAUSTED: You have already inspected the codebase. "
-                        "Do not read further files. Proceed immediately to 'write_file' to produce "
-                        "'backend/lambda_main.go', 'backend/build_lambda.sh' (for Go), 'template.yaml', "
-                        "and 'USER.md', then call 'finish'."
-                    )
-                else:
-                    tool_output = execute_tool(repo, func_name, args)
             else:
                 tool_output = execute_tool(repo, func_name, args)
 
@@ -1078,15 +1102,13 @@ def run_agent_loop(
             return completion_data
 
         # Early Completion Check: If all required deliverables exist on disk, finalize immediately!
-        backend_rel = "backend" if (repo / "backend").is_dir() else "."
-        backend_dir = repo / backend_rel
-        has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+        has_adapter = (repo / adapter_file).is_file()
+        has_build = (repo / build_file).is_file() if build_file else True
         has_sam = (repo / "template.yaml").is_file()
         has_user = (repo / "USER.md").is_file()
-        has_build = (backend_dir / "build_lambda.sh").is_file() if (audit_res and getattr(audit_res, "target_runtime", "").lower() == "go") else True
 
-        if has_adapter and has_sam and has_user and has_build:
-            log_success("All essential migration deliverables ('lambda_main', 'build_lambda.sh', 'template.yaml', 'USER.md') successfully generated!")
+        if has_adapter and has_build and has_sam and has_user:
+            log_success(f"All essential migration deliverables for {target_runtime.upper()} ('{adapter_file}', 'template.yaml', 'USER.md') successfully generated!")
             verdict_val = getattr(audit_res, "verdict", "MIGRATE")
             log_step("DECISION", f"Migration Verdict Concluded: [{verdict_val.upper()}]", Colors.GREEN)
             return {"verdict": verdict_val}
@@ -1685,7 +1707,13 @@ Examples:
                 # Check that essential artifacts were actually written
                 backend_rel = "backend" if (repo_path / "backend").is_dir() else "."
                 backend_dir = repo_path / backend_rel
-                has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+                has_adapter = (
+                    (backend_dir / "lambda_main.go").is_file() or
+                    (backend_dir / "lambda_function.py").is_file() or
+                    (backend_dir / "lambda.js").is_file() or
+                    (repo_path / "lambda_function.py").is_file() or
+                    (repo_path / "lambda.js").is_file()
+                )
                 has_sam = (repo_path / "template.yaml").is_file()
                 has_user = (repo_path / "USER.md").is_file()
 
@@ -1698,7 +1726,13 @@ Examples:
             except Exception as exc:
                 backend_rel = "backend" if (repo_path / "backend").is_dir() else "."
                 backend_dir = repo_path / backend_rel
-                has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+                has_adapter = (
+                    (backend_dir / "lambda_main.go").is_file() or
+                    (backend_dir / "lambda_function.py").is_file() or
+                    (backend_dir / "lambda.js").is_file() or
+                    (repo_path / "lambda_function.py").is_file() or
+                    (repo_path / "lambda.js").is_file()
+                )
                 has_sam = (repo_path / "template.yaml").is_file()
                 has_user = (repo_path / "USER.md").is_file()
                 if has_adapter and has_sam and has_user:
