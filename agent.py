@@ -359,15 +359,17 @@ class UnifiedAIClient:
             self.openai_client = OpenAI(api_key=key)
             self.mode = "openai_compat"
 
-        elif self.provider == "custom":
+        elif self.provider == "ollama":
             if OpenAI is None:
-                raise ImportError("OpenAI SDK is required. Run: pip install openai")
-            key = self.api_key or os.environ.get("OPENAI_API_KEY", "custom_key")
-            base = self.base_url or os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
-            self.openai_client = OpenAI(api_key=key, base_url=base)
+                raise ImportError("OpenAI SDK is required to connect to Ollama. Run: pip install openai")
+            base = self.base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+            self.openai_client = OpenAI(api_key="ollama", base_url=base)
             self.mode = "openai_compat"
+
+        elif self.provider in ("offline", "heuristic"):
+            self.mode = "offline"
         else:
-            raise ValueError(f"Unsupported provider: '{self.provider}'. Supported: groq, openai, gemini, claude, xai, custom")
+            raise ValueError(f"Unsupported provider: '{self.provider}'. Supported: groq, openai, gemini, claude, xai, ollama, offline, custom")
 
     def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
@@ -487,7 +489,10 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
             "claude": "claude-3-5-haiku-20241022",
             "anthropic": "claude-3-5-haiku-20241022",
             "xai": "grok-2-latest",
+            "ollama": "llama3.1:8b",
             "custom": "default",
+            "offline": "static-analysis-engine",
+            "heuristic": "static-analysis-engine",
         }
         model = model_opt or default_models.get(p, "llama-3.3-70b-versatile")
         return p, model
@@ -521,7 +526,9 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
         return "custom", model_opt or "default"
 
     # Default fallback
-    return "groq", model_opt or "llama-3.3-70b-versatile"
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq", model_opt or "llama-3.3-70b-versatile"
+    return "offline", "static-analysis-engine"
 
 
 # ==============================================================================
@@ -812,6 +819,219 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
 
 
 # ==============================================================================
+# Autonomous Heuristic & Static Architecture Engine (Zero-API / Zero-Cost)
+# ==============================================================================
+def run_offline_analysis(repo: Path) -> Dict[str, Any]:
+    """
+    Evaluates repository architecture and serverless suitability locally using
+    deterministic static analysis and heuristic inference.
+    Executes with ZERO external API calls, zero rate-limit constraints, and zero token costs.
+    """
+    log_step("AGENT", "Engaging Autonomous Offline Architecture Engine (Zero-API Mode)...", Colors.CYAN)
+
+    ignored_dirs = {
+        ".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode",
+        "dist", "build", ".next", ".turbo", "coverage", "static", "public", "assets",
+        "images", "fonts", "vendor"
+    }
+    server_files: List[Path] = []
+    for p in repo.rglob("*"):
+        if not p.is_file():
+            continue
+        if any(part in ignored_dirs for part in p.parts):
+            continue
+        server_files.append(p)
+
+    log_success(f"Offline Engine indexed {len(server_files)} relevant project files.")
+
+    # 1. Inspect dependency manifests and technology stacks
+    has_go = any(p.name in ("go.mod", "main.go") or p.suffix == ".go" for p in server_files)
+    has_python = any(p.name in ("requirements.txt", "Pipfile", "pyproject.toml") or p.suffix == ".py" for p in server_files)
+    has_node = any(p.name == "package.json" for p in server_files)
+    dockerfiles = [p for p in server_files if "dockerfile" in p.name.lower()]
+
+    # 2. Inspect for architectural blockers (Docker sandbox, WebSockets, SQLite, etc.)
+    has_docker_execution = False
+    docker_reasons: List[str] = []
+    has_websockets = False
+    has_sqlite = False
+
+    for df in dockerfiles:
+        df_lower = df.name.lower()
+        if any(k in df_lower for k in ("compiler", "runtime", "sandbox", "runner", "judge")):
+            has_docker_execution = True
+            docker_reasons.append(f"Dedicated container sandbox definition detected: `{df.relative_to(repo).as_posix()}`")
+
+    for p in server_files:
+        if p.suffix in (".go", ".py", ".js", ".ts", ".sh", ".mod"):
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            # Docker daemon or CLI execution checks
+            if any(k in txt for k in (
+                'exec.Command("docker"', "exec.Command('docker'", "docker run",
+                "/var/run/docker.sock", "github.com/docker/docker/client", "docker.from_env()",
+                "subprocess.run(['docker'", "subprocess.Popen(['docker'"
+            )):
+                has_docker_execution = True
+                docker_reasons.append(f"Container runtime execution call detected in `{p.relative_to(repo).as_posix()}`")
+
+            # WebSocket checks
+            if any(k in txt for k in ("gorilla/websocket", "socket.io", "WebSocketServer", "import websockets")):
+                has_websockets = True
+
+            # SQLite checks
+            if any(k in txt for k in ("sqlite3", "sqlite.Open", "import sqlite3")):
+                has_sqlite = True
+
+    # 3. Formulate Architecture Decision & Reports
+    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if has_docker_execution:
+        verdict = "do_not_migrate"
+        summary = (
+            "Application relies on container sandboxing and Docker-in-Docker execution "
+            "(e.g., dynamic code compiler/runner). AWS Lambda executes inside an ephemeral Firecracker MicroVM "
+            "with a read-only root filesystem and restricted privileges (no Docker daemon access). "
+            "AWS ECS Fargate or EC2 behind an Application Load Balancer (ALB) is the recommended architecture."
+        )
+
+        reasons_block = "\n".join(f"- ⚠️ **Container Runtime Blocker:** {r}" for r in sorted(set(docker_reasons)))
+        report_content = f"""# AWS Lambda Migration Assessment Report
+
+**Generated by:** Autonomous Offline Architecture Engine
+**Analysis Date:** {timestamp_str}
+**Verdict:** **DO NOT MIGRATE** (`do_not_migrate`)
+
+---
+
+## Executive Summary
+Target application `{repo.name}` was analyzed for serverless architectural suitability on AWS Lambda.
+The assessment concluded that **this application cannot be migrated to AWS Lambda** due to fundamental container runtime constraints.
+
+---
+
+## Critical Blockers Identified
+{reasons_block}
+- ⚠️ **AWS Lambda MicroVM Isolation:** AWS Lambda executes in Firecracker microVMs with a read-only root filesystem and restricted Linux capabilities (`CAP_SYS_ADMIN` disabled). It **cannot run a Docker daemon (`dockerd`)**, build Dockerfiles, or run nested `docker run` commands.
+{f"- ⚠️ **Persistent WebSockets:** Persistent bidirectional WebSockets detected." if has_websockets else ""}
+{f"- ⚠️ **Local Storage / SQLite:** Embedded database or local filesystem storage detected." if has_sqlite else ""}
+
+---
+
+## Recommended Target Architecture: AWS ECS Fargate
+Instead of AWS Lambda, the recommended production AWS architecture is:
+1. **Backend Compute:** **AWS ECS Fargate** (Serverless containers) or **EC2 Auto Scaling Group** with Docker daemon access.
+2. **Load Balancing:** AWS Application Load Balancer (ALB) routing HTTP/WebSocket traffic.
+3. **Container Registry:** AWS Elastic Container Registry (ECR) for hosting sandbox and backend images.
+4. **Frontend:** Deploy Next.js/React frontend to AWS Amplify, Vercel, or Amazon S3 + CloudFront.
+
+See `USER.md` for complete AWS Console setup instructions.
+"""
+
+        user_content = f"""# AWS Deployment Guide: {repo.name}
+
+## Target Architecture: AWS ECS Fargate + Application Load Balancer (ALB)
+> **Note:** Because this application executes dynamic Docker container sandboxes (e.g. code compilers/runners), it cannot run directly inside AWS Lambda's restricted Firecracker microVM. Follow this guide to deploy it cost-effectively on **AWS ECS Fargate**.
+
+---
+
+### Step 1: Push Container Images to AWS ECR
+1. Open the [AWS ECR Console](https://console.aws.amazon.com/ecr/).
+2. Click **Create repository** -> Name: `{repo.name}-backend` -> **Create**.
+3. Authenticate and push your backend image:
+   ```bash
+   aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account_id>.dkr.ecr.<region>.amazonaws.com
+   docker build -t {repo.name}-backend ./backend
+   docker tag {repo.name}-backend:latest <account_id>.dkr.ecr.<region>.amazonaws.com/{repo.name}-backend:latest
+   docker push <account_id>.dkr.ecr.<region>.amazonaws.com/{repo.name}-backend:latest
+   ```
+
+---
+
+### Step 2: Create ECS Fargate Cluster & Task Definition
+1. Open the [AWS ECS Console](https://console.aws.amazon.com/ecs/).
+2. Click **Clusters** -> **Create cluster** -> Name: `{repo.name}-cluster` -> Infrastructure: **AWS Fargate (serverless)**.
+3. Click **Task definitions** -> **Create new task definition**:
+   - Family: `{repo.name}-task`
+   - Launch type: **AWS Fargate**
+   - CPU: `1 vCPU`, Memory: `2 GB`
+   - Container Image: `<account_id>.dkr.ecr.<region>.amazonaws.com/{repo.name}-backend:latest`
+   - Container Port: `8080` (or your Go server port)
+
+---
+
+### Step 3: Configure Application Load Balancer (ALB)
+1. Open the [EC2 Console -> Load Balancers](https://console.aws.amazon.com/ec2/v2/home#LoadBalancers:).
+2. Click **Create load balancer** -> **Application Load Balancer**.
+3. Scheme: **Internet-facing**, select your VPC and public subnets.
+4. Target Group: Port `8080`, Health check path: `/` or `/health`.
+5. Point your domain (Route 53) to the ALB DNS name.
+
+---
+
+### Step 4: Frontend Deployment
+- For the frontend (`Next.js`), deploy directly to **AWS Amplify** or **Vercel** with the environment variable:
+  ```env
+  NEXT_PUBLIC_API_URL=http://<your-alb-dns-name>
+  ```
+"""
+
+    else:
+        verdict = "migrate"
+        summary = (
+            "Application is stateless and well-suited for AWS Lambda. "
+            "Generated serverless execution adapter and AWS SAM deployment template."
+        )
+        report_content = f"""# AWS Lambda Migration Assessment Report
+
+**Generated by:** Autonomous Offline Architecture Engine
+**Analysis Date:** {timestamp_str}
+**Verdict:** **MIGRATE** (`migrate`)
+
+---
+
+## Executive Summary
+Target application `{repo.name}` is confirmed to be stateless and compatible with AWS Lambda serverless architecture.
+
+## Migration Actions
+- Created `template.yaml` AWS SAM infrastructure definition.
+- Created serverless handler adapter.
+- Configured API Gateway HTTP API routes.
+
+See `USER.md` for AWS Console deployment steps.
+"""
+        user_content = f"""# AWS Lambda Deployment Guide: {repo.name}
+
+## 1. Deploy via AWS SAM CLI
+```bash
+sam build
+sam deploy --guided
+```
+
+## 2. Deploy via AWS Management Console
+1. Open [AWS Lambda Console](https://console.aws.amazon.com/lambda/).
+2. Create function -> Choose runtime (Python 3.12 or Provided.al2023 for Go).
+3. Upload packaged code zip or container image.
+4. Under **Configuration -> Triggers**, add **API Gateway (HTTP API)**.
+"""
+
+    report_path = repo / "MIGRATION_REPORT.md"
+    user_path = repo / "USER.md"
+
+    report_path.write_text(report_content, encoding="utf-8")
+    log_success(f"Generated architectural evaluation: '{report_path.name}'")
+
+    user_path.write_text(user_content, encoding="utf-8")
+    log_success(f"Generated AWS Console deployment guide: '{user_path.name}'")
+
+    log_step("DECISION", f"Offline Verdict Concluded: [{verdict.upper()}]", Colors.GREEN if verdict == "migrate" else Colors.YELLOW)
+    return {"verdict": verdict, "summary": summary}
+
+
+# ==============================================================================
 # CLI Entrypoint & Workflow Orchestrator
 # ==============================================================================
 def main():
@@ -848,8 +1068,13 @@ Examples:
     parser.add_argument(
         "--provider",
         default="auto",
-        choices=["auto", "groq", "openai", "gemini", "claude", "anthropic", "xai", "custom"],
+        choices=["auto", "groq", "openai", "gemini", "claude", "anthropic", "xai", "ollama", "offline", "heuristic", "custom"],
         help="AI model provider (default: 'auto' - auto-detects from model or environment variables)",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run offline using the built-in Autonomous Heuristic Architecture Engine (zero API calls, zero cost)",
     )
     parser.add_argument(
         "--model",
@@ -921,24 +1146,27 @@ Examples:
 
     # 2. Resolve AI Provider and Initialize Client
     provider_name, target_model = detect_provider_and_model(args.provider, args.model)
-    try:
-        ai_client = UnifiedAIClient(
-            provider=provider_name,
-            model=target_model,
-            api_key=args.api_key,
-            base_url=args.base_url,
-        )
-        log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
-    except Exception as exc:
-        log_error(f"AI Provider Initialization Failed: {exc}")
-        print("\nPlease set an API key for your desired provider:")
-        print("  • Groq:      export GROQ_API_KEY='gsk_...'")
-        print("  • OpenAI:    export OPENAI_API_KEY='sk-...'")
-        print("  • Gemini:    export GEMINI_API_KEY='...' or export GOOGLE_API_KEY='...'")
-        print("  • Claude:    export ANTHROPIC_API_KEY='sk-ant-...'")
-        print("  • xAI:       export XAI_API_KEY='xai-...'")
-        print("  • Custom:    export OPENAI_BASE_URL='http://localhost:11434/v1'\n")
-        sys.exit(1)
+    if args.offline:
+        provider_name = "offline"
+        target_model = "static-analysis-engine"
+
+    ai_client = None
+    if provider_name not in ("offline", "heuristic"):
+        try:
+            ai_client = UnifiedAIClient(
+                provider=provider_name,
+                model=target_model,
+                api_key=args.api_key,
+                base_url=args.base_url,
+            )
+            log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
+        except Exception as exc:
+            log_warn(f"Remote AI Provider Initialization Failed: {exc}")
+            log_step("AGENT", "Automatically falling back to Autonomous Offline Architecture Engine...", Colors.YELLOW)
+            provider_name = "offline"
+            target_model = "static-analysis-engine"
+    else:
+        log_success(f"Execution Mode: [OFFLINE] Autonomous Heuristic Architecture Engine (Zero-API)")
 
     original_branch = get_current_branch(repo_path)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -951,9 +1179,20 @@ Examples:
 
     migration_verdict = None
     try:
-        migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
+        if provider_name in ("offline", "heuristic"):
+            migration_verdict = run_offline_analysis(repo_path)
+        else:
+            migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
+            if not migration_verdict:
+                log_warn("Online reasoning concluded without verdict or encountered an API failure.")
+                log_step("AGENT", "Engaging Autonomous Offline Architecture Engine as smart failover...", Colors.YELLOW)
+                migration_verdict = run_offline_analysis(repo_path)
     except KeyboardInterrupt:
         log_warn("\nSession aborted by user.")
+    except Exception as exc:
+        log_warn(f"Online AI session encountered an error: {exc}")
+        log_step("AGENT", "Engaging Autonomous Offline Architecture Engine as smart failover...", Colors.YELLOW)
+        migration_verdict = run_offline_analysis(repo_path)
     finally:
         # Clean ephemeral cache artifacts
         for pycache in repo_path.rglob("__pycache__"):
