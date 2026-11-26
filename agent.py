@@ -242,6 +242,12 @@ TOOLS = [
         ["path", "content"],
     ),
     _tool_spec(
+        "search",
+        "Searches for a keyword or text pattern across repository source files.",
+        {"query": {"type": "string", "description": "Keyword string to search for"}},
+        ["query"],
+    ),
+    _tool_spec(
         "run_command",
         "Executes a deterministic safety-whitelisted validation command (py_compile, pytest, sam validate, node --check).",
         {"command": {"type": "string", "description": "Command string to execute"}},
@@ -642,6 +648,25 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
             truncated = content[:5000]
             log_success(f"Loaded {len(truncated)} characters from '{rel_path}'")
             return truncated
+
+        if name == "search":
+            query = args.get("query", "").lower()
+            log_step("SEARCH", f"Searching codebase for pattern: '{query}'", Colors.CYAN)
+            matches = []
+            for p in sorted(repo.rglob("*")):
+                if not p.is_file():
+                    continue
+                if any(x in p.parts for x in (".git", "node_modules", ".next", "dist", "build", "__pycache__")):
+                    continue
+                try:
+                    txt = p.read_text(encoding="utf-8", errors="ignore")
+                    if query in txt.lower():
+                        matches.append(p.relative_to(repo).as_posix())
+                except Exception:
+                    continue
+            res = f"Found '{query}' in {len(matches)} files: " + ", ".join(matches[:15]) if matches else f"No matches found for '{query}'."
+            log_success(res)
+            return res
 
         if name == "write_file":
             rel_path = args["path"]
