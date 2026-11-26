@@ -513,6 +513,8 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     # Auto-detection from model name if provided
     if model_opt:
         m = model_opt.lower()
+        if m.startswith("openai/"):
+            return "groq", model_opt
         if "claude" in m:
             return "anthropic", model_opt
         if "gemini" in m:
@@ -521,12 +523,12 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
             return "openai", model_opt
         if "grok" in m:
             return "xai", model_opt
-        if "llama" in m or "mixtral" in m or m.startswith("openai/"):
+        if "llama" in m or "mixtral" in m:
             return "groq", model_opt
 
     # Auto-detection from environment variables
     if os.environ.get("GROQ_API_KEY"):
-        return "groq", model_opt or "llama-3.3-70b-versatile"
+        return "groq", model_opt or "llama-3.1-8b-instant"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai", model_opt or "gpt-4o"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
@@ -540,7 +542,7 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
 
     # Default fallback
     if os.environ.get("GROQ_API_KEY"):
-        return "groq", model_opt or "llama-3.3-70b-versatile"
+        return "groq", model_opt or "llama-3.1-8b-instant"
     return "offline", "static-analysis-engine"
 
 
