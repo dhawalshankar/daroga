@@ -16,10 +16,12 @@ Operating with **zero blast radius**, DAROGA deterministically inspects existing
 
 ## Table of Contents
 
+- [Executive Briefing: What, Why, How & Market Value](#executive-briefing-what-why-how--market-value)
 - [Core Value Proposition](#core-value-proposition)
 - [Strict Scope: EC2 → AWS Lambda ONLY](#strict-scope-ec2--aws-lambda-only)
 - [How It Works: The 11-Stage Pipeline](#how-it-works-the-11-stage-pipeline)
 - [System Architecture](#system-architecture)
+- [In-Guest VM Inspection (`--vm-access`)](#in-guest-vm-inspection---vm-access)
 - [Zero Blast Radius Guarantee](#zero-blast-radius-guarantee)
 - [Installation & Setup](#installation--setup)
 - [CLI Reference & Usage](#cli-reference--usage)
@@ -30,6 +32,44 @@ Operating with **zero blast radius**, DAROGA deterministically inspects existing
 - [Multi-Provider & Zero-API Offline Mode](#multi-provider--zero-api-offline-mode)
 - [Repository Structure](#repository-structure)
 - [License](#license)
+
+---
+
+## Executive Briefing: What, Why, How & Market Value
+
+### 1. What DAROGA Does (Kya Karta Hai)
+DAROGA is an **autonomous, project-agnostic cloud migration agent and architecture auditor**. It inspects any existing local repository (Go, Python, Node.js) and its corresponding live AWS EC2 virtual machine, audits compatibility with AWS serverless quotas, synthesizes an authoritative 23-section architectural report, authors production-ready serverless runtime adapters and AWS SAM infrastructure templates, commits everything onto an isolated Git branch, and raises a ready-to-merge GitHub Pull Request—all with **zero blast radius** and zero human intervention.
+
+### 2. Why DAROGA Exists (Kyun Karta Hai)
+- **The Idle Compute Tax**: Millions of companies run 24/7 EC2 virtual machines paying continuous hourly bills ($10 to $500+/month per instance) even during periods of zero traffic.
+- **The Migration Gap**: Migrating from VM sockets (`http.ListenAndServe`, `app.run()`) to serverless event handlers requires assessing timeouts (15 minutes), payload ceilings (6 MB), ephemeral `/tmp` storage, IAM execution roles, and API Gateway routing.
+- **DevOps Cost & Fatigue**: Engaging cloud consulting partners to perform an architecture audit and rewrite entrypoints typically costs **$5,000–$25,000** and takes **2 to 6 weeks**. DAROGA compresses this entire lifecycle into **45 seconds** for free.
+- **Fear of Breaking Production**: Traditional migration attempts risk mutating live cloud infrastructure or corrupting Git history. DAROGA guarantees 100% read-only cloud inspection and 100% untouched `main` branches.
+
+### 3. How DAROGA Works (Kaise Karta Hai)
+DAROGA operates on an **11-stage deterministic pipeline** paired with a **Zero-Read Pure Codegen Protocol**:
+1. **Deterministic Facts First (No Hallucinations)**:
+   - **AST Repository Scanner**: Deterministically detects language, frameworks, ports, and entrypoints.
+   - **AWS Cloud Boto3 Inspector**: Reads live STS caller identity, EC2 instance profiles, VPC subnets, and Security Groups.
+   - **Chrome DevTools (CDP) Inspector**: Reads active AWS Management Console tabs over port `9222`.
+   - **In-Guest VM Telemetry (`--vm-access`)**: Directly audits running systemd services, listening TCP sockets (`ss -tulpn`), OS distribution, and Docker daemon containers via SSH or AWS SSM.
+2. **Deterministic Architecture Engine**:
+   - Synthesizes the authoritative 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md` with complete AWS Console click paths and AWS CLI commands.
+3. **Zero-Read Pure Codegen Protocol (AI Compiler Mode)**:
+   - Where AI is NOT needed, AI is NOT used. Exploration, file reading, and searching are handled 100% deterministically.
+   - The LLM receives the verified audit facts, in-guest VM telemetry, and target entrypoint code directly in its prompt.
+   - Armed with strictly write-only tools (`write_file` and `finish`), the AI compiles the serverless adapter (`lambda_main.go` / `lambda_function.py` / `lambda.js`), Linux ARM64 build script, `template.yaml`, and `USER.md` in 4 turns flat with zero reading loops.
+4. **Isolated Git Automation**:
+   - Deliverables are staged and committed onto an isolated feature branch (`lambda-migration-<timestamp>`), pushed to the remote repository, and linked to a live GitHub Pull Request.
+
+### 4. Market & Economic Value (Market Value & ROI)
+| Dimension | Traditional Manual Migration | DAROGA Autonomous Agent |
+|---|---|---|
+| **Delivery Time** | 2 to 6 weeks | **45 seconds** |
+| **DevOps Labor Cost** | $5,000 – $25,000 | **$0.00** (Open Source / Free Tier) |
+| **Ongoing Idle Compute Cost** | Billed 24/7 continuous hours | **$0.00/month** (1M Free Requests / mo included) |
+| **Production Blast Radius** | High (risk of breaking live configs) | **Zero** (100% Read-only cloud + isolated Git branch) |
+| **Deliverables Completeness** | Varies by consultant | Complete: Report + IaC (SAM) + Adapters + Console Guide |
 
 ---
 

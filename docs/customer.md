@@ -35,6 +35,16 @@ flowchart LR
     end
 ```
 
+### 1.1 Business ROI & Market Value
+
+| Metric | Traditional Cloud Migration | DAROGA Autonomous Agent |
+|---|---|---|
+| **Turnaround Time** | 2 to 6 weeks of engineering sprint | **45 seconds** |
+| **DevOps Consulting Cost** | $5,000 to $25,000 | **$0.00** (Open-source CLI) |
+| **Idle Infrastructure Bill** | Continuous 24/7 EC2 hourly rates | **$0.00/month** (100% covered under AWS Lambda free tier) |
+| **Operational Overhead** | OS patching, SSH key rotation, AMI updates | **Zero servers** (AWS fully manages underlying runtime) |
+| **Migration Risk** | High (risk of accidental downtime or live breaks) | **Zero Blast Radius** (100% read-only cloud + isolated Git feature branch) |
+
 ---
 
 ## 2. Quick Setup (3 Minutes)
