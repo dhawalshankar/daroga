@@ -854,13 +854,45 @@ def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]]) 
     raise TimeoutError(f"Exceeded maximum API retries for provider '{client.provider}'.")
 
 
-def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT_MAX_TURNS) -> Optional[Dict[str, Any]]:
+def run_agent_loop(
+    repo: Path,
+    client: UnifiedAIClient,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    audit_res: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    # Construct rich, targeted context from deterministic audit so LLM has zero need to browse or search
+    context_bulletins = []
+    if audit_res is not None:
+        context_bulletins.append(f"Target Service Runtime: {audit_res.target_runtime}")
+        context_bulletins.append(f"Verdict: {audit_res.verdict} (Score: {audit_res.score}%)")
+        if audit_res.conditions:
+            context_bulletins.append(f"Conditions: {'; '.join(audit_res.conditions)}")
+        if audit_res.blockers:
+            context_bulletins.append(f"Blockers: {'; '.join(audit_res.blockers)}")
+        if getattr(audit_res, "repo", None):
+            rep = audit_res.repo
+            context_bulletins.append(f"Target Service Directory: {rep.target_service_directory}")
+            context_bulletins.append(f"Entry Points: {', '.join(rep.entrypoints)}")
+            context_bulletins.append(f"Exposed Ports: {', '.join(map(str, rep.exposed_ports))}")
+            context_bulletins.append(f"Frameworks: {', '.join(rep.target_frameworks)}")
+
+    audit_summary_str = "\n".join(f"- {b}" for b in context_bulletins)
+
+    user_instruction = (
+        f"Repository '{repo.name}' has been deterministically scanned and audited with the following findings:\n"
+        f"{audit_summary_str}\n\n"
+        f"INSTRUCTION: You do NOT need to explore or read files repeatedly. The architecture, entrypoints, and runtime are already verified above.\n"
+        f"Generate the production deliverables immediately using `write_file`:\n"
+        f"1. Serverless adapter (`backend/lambda_main.go` for Go / `lambda_function.py` for Python / `lambda.js` for Node).\n"
+        f"2. Build script (`backend/build_lambda.sh`) if Go.\n"
+        f"3. Production AWS SAM specification (`template.yaml`).\n"
+        f"4. AWS Console Operator Deployment Guide (`USER.md`).\n\n"
+        f"When written, immediately call `finish` with verdict '{getattr(audit_res, 'verdict', 'MIGRATE')}'. Be fast and concise!"
+    )
+
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"Repository target path: {repo.name}. Begin autonomous assessment and migration.",
-        },
+        {"role": "user", "content": user_instruction},
     ]
 
     log_step("AGENT", f"Session active: provider '{client.provider.upper()}' | model '{client.model}' (Max turns: {max_turns})")
@@ -1478,7 +1510,7 @@ Examples:
                     base_url=args.base_url,
                 )
                 log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
-                migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
+                migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns, audit_res=audit_res)
                 
                 # Check that essential artifacts were actually written
                 backend_rel = "backend" if (repo_path / "backend").is_dir() else "."
