@@ -616,6 +616,60 @@ def construct_pr_url(remote_url: str, branch: str) -> Optional[str]:
     return None
 
 
+def raise_pull_request(
+    repo: Path,
+    branch: str,
+    base_branch: str,
+    title: str,
+    body: str,
+    remote_url: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Autonomously creates a GitHub Pull Request using GitHub CLI ('gh pr create').
+    Falls back gracefully to a 1-click web PR URL if 'gh' is unauthenticated or unavailable.
+    """
+    # 1. Attempt automated PR creation via GitHub CLI (gh)
+    try:
+        gh_check = subprocess.run(["gh", "--version"], capture_output=True, text=True, check=False)
+        if gh_check.returncode == 0:
+            log_step("GH-PR", "Autonomous Pull Request Creation via GitHub CLI ('gh')...", Colors.CYAN)
+            pr_res = subprocess.run(
+                [
+                    "gh", "pr", "create",
+                    "--base", base_branch,
+                    "--head", branch,
+                    "--title", title,
+                    "--body", body,
+                ],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if pr_res.returncode == 0:
+                live_pr_url = pr_res.stdout.strip()
+                log_success(f"Successfully raised live GitHub Pull Request: {live_pr_url}")
+                return live_pr_url
+            else:
+                stderr_clean = pr_res.stderr.strip()
+                if "already exists" in stderr_clean.lower():
+                    # Extract existing PR URL if available
+                    for line in stderr_clean.splitlines():
+                        if "http" in line:
+                            log_success(f"Pull Request already active: {line.strip()}")
+                            return line.strip()
+                    log_warn(f"GitHub Pull Request already exists for branch '{branch}'.")
+                else:
+                    log_warn(f"GitHub CLI 'gh pr create' returned non-zero:\n{stderr_clean}")
+    except Exception as exc:
+        log_warn(f"GitHub CLI invocation skipped: {exc}")
+
+    # 2. Fallback to 1-Click Pull Request URL
+    if remote_url:
+        return construct_pr_url(remote_url, branch)
+    return None
+
+
 def safe_resolve_path(repo: Path, rel_path: str) -> Path:
     """Enforces sandboxing: prevents path traversal outside the repository."""
     full_path = (repo / rel_path).resolve()
@@ -1450,7 +1504,8 @@ Examples:
             run_git(repo_path, "commit", "-m", commit_msg)
             log_success(f"Changes committed to isolated branch: '{migration_branch}'")
 
-            # Remote Push Handling
+            # Remote Push & Autonomous Pull Request Raising
+            pr_result_url = None
             if args.push:
                 available_remotes = get_git_remotes(repo_path)
                 if args.remote in available_remotes:
@@ -1459,10 +1514,33 @@ Examples:
                     if push_res.returncode == 0:
                         log_success(f"Pushed branch '{migration_branch}' to remote '{args.remote}' successfully!")
                         remote_url = get_remote_url(repo_path, args.remote)
-                        pr_url = construct_pr_url(remote_url, migration_branch)
-                        if pr_url:
+                        
+                        # Autonomously raise Pull Request via gh CLI (or generate web PR URL fallback)
+                        pr_title = f"feat(aws-lambda): migrate {repo_path.name} backend service to AWS Serverless"
+                        pr_body = (
+                            f"## 🚀 DAROGA Autonomous Cloud Infrastructure Migration\n\n"
+                            f"**Target Architecture:** AWS Lambda (Graviton arm64) + Amazon API Gateway HTTP API v2\n"
+                            f"**Migration Verdict:** `{commit_verdict_str.upper()}`\n\n"
+                            f"### Generated Serverless Deliverables\n"
+                            f"- `EC2_TO_LAMBDA_MIGRATION_REPORT.md`: Authoritative 23-section architecture audit and cost analysis.\n"
+                            f"- `template.yaml`: Production AWS SAM infrastructure specification.\n"
+                            f"- `USER.md`: AWS Management Console step-by-step setup guide.\n"
+                            f"- Serverless runtime adapters and ARM64 Graviton build script.\n\n"
+                            f"### Safety & Non-Destructive Guarantee\n"
+                            f"- The `{original_branch}` branch and live EC2 instances were left **100% untouched**.\n"
+                            f"- Review changes before merging: `git diff {original_branch}..{migration_branch}`."
+                        )
+                        pr_result_url = raise_pull_request(
+                            repo=repo_path,
+                            branch=migration_branch,
+                            base_branch=original_branch,
+                            title=pr_title,
+                            body=pr_body,
+                            remote_url=remote_url,
+                        )
+                        if pr_result_url:
                             print("\n" + "=" * 70)
-                            log_success(f"Open GitHub Pull Request: {pr_url}")
+                            log_success(f"Pull Request Ready: {pr_result_url}")
                             print("=" * 70)
                     else:
                         log_warn(f"Remote push failed (non-fatal):\n{push_res.stderr.strip()}")
@@ -1475,6 +1553,7 @@ Examples:
             else:
                 log_step("GIT", f"Remote push skipped (default opt-in). Changes committed locally to '{migration_branch}'.")
                 print(f"ℹ Push command: git push -u {args.remote} {migration_branch}")
+                print(f"ℹ Raise PR with: gh pr create --base {original_branch} --head {migration_branch} --title \"feat(aws-lambda): migrate to serverless\"")
         else:
             log_step("GIT", "No code changes generated during session.")
 
@@ -1519,10 +1598,13 @@ Examples:
     if has_changes:
         branch_action = "COMMITTED & PUSHED" if args.push else "COMMITTED LOCALLY"
         print(f"• Migration Branch: {migration_branch} ({branch_action})")
+        if pr_result_url:
+            print(f"• Pull Request:     {Colors.CYAN}{pr_result_url}{Colors.RESET}")
         print(f"• Review Diff:      git diff {original_branch}..{migration_branch} --stat")
         print(f"• Checkout Branch:  git checkout {migration_branch}")
         if not args.push:
             print(f"• Push to Remote:   git push -u {args.remote} {migration_branch}")
+            print(f"• Raise PR with:    gh pr create --base {original_branch} --head {migration_branch} --title \"feat(aws-lambda): migrate to serverless\"")
         print(f"\n{Colors.BOLD}📖 NEXT STEPS FOR AWS DASHBOARD / CONSOLE:{Colors.RESET}")
         print(f"   1. Switch to migration branch:  {Colors.CYAN}git checkout {migration_branch}{Colors.RESET}")
         print(f"   2. Open '{Colors.CYAN}USER.md{Colors.RESET}' in the repo root for step-by-step AWS Dashboard instructions:")

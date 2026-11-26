@@ -186,15 +186,17 @@ If you have the AWS CLI configured on your computer (`aws configure`), DAROGA au
 
 DAROGA works directly on your project folder **without needing you to copy or move files**. Just point it to your project path:
 
-### 1. The Standard Command (Everything in One Go)
-This is what most customers will run. It inspects your project, audits your AWS infrastructure, generates the serverless code, creates an isolated branch, pushes to GitHub, and gives you a 1-click Pull Request link:
+### 1. The Standard Command (Audit + Code + Push + Autonomous Pull Request)
+This is what most customers and interviewers want to see. In a single command:
+1. It inspects your application architecture and live EC2 cloud infrastructure.
+2. Synthesizes all serverless adapters, SAM templates, and console deployment guides.
+3. Creates an isolated migration feature branch.
+4. Pushes the branch to your Git remote (`origin`).
+5. **Autonomously raises a live GitHub Pull Request** using the GitHub CLI (`gh pr create`) so your team can review and merge with 1 click!
 
 ```bash
-# Windows
-daroga "C:\Users\YourName\Desktop\code\my-application"
-
-# Mac / Linux
-daroga /home/ubuntu/projects/my-application
+# Push branch & raise live GitHub Pull Request automatically:
+daroga "C:\Users\YourName\Desktop\code\my-application" --push
 ```
 
 ---
