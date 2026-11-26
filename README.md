@@ -48,11 +48,12 @@ daroga "C:\path\to\your-ec2-project"
 | **1. Repository AST Scan** | Discovers entrypoints, continuous socket listeners (`http.ListenAndServe`, `app.run`), ports, and Docker execution calls. | AST Manifest & Language Stack |
 | **2. Live AWS Cloud Audit** | Read-only inspection of STS identity, EC2 instance types, VPC topology, and Security Group rules. | Live Infrastructure Delta |
 | **3. Browser CDP Inspection** | Read-only inspection of active AWS Management Console tabs via existing Chrome DevTools session. | Console Active State Mapping |
-| **4. Compatibility Engine** | Evaluates 15-min timeout, 6MB payload limit, ephemeral `/tmp` storage, and Graviton ARM64 runtime. | Feasibility Verdict & Score |
-| **5. 23-Section Report** | Compiles exhaustive migration audit with exact AWS Console click paths and AWS CLI commands. | `EC2_TO_LAMBDA_MIGRATION_REPORT.md` |
-| **6. Code & IaC Synthesis** | Generates serverless entrypoint adapter, Graviton build script, and AWS SAM template. | `lambda_main.go`, `build_lambda.sh`, `template.yaml` |
-| **7. Operator Guide** | Details exact environment variables, IAM roles, and API Gateway trigger configurations for human review. | `USER.md` & `MIGRATION_REPORT.md` |
-| **8. Git Automation & PR** | Creates isolated branch, commits artifacts, pushes to `origin`, and prints GitHub Pull Request link. | `lambda-migration-<timestamp>` |
+| **4. In-Guest VM Inspection** | Optional non-destructive inspection of running EC2 instance via AWS SSM Run Command or SSH (`--vm-access`). | Live Sockets, Services & OS Telemetry |
+| **5. Compatibility Engine** | Evaluates 15-min timeout, 6MB payload limit, ephemeral `/tmp` storage, and Graviton ARM64 runtime. | Feasibility Verdict & Score |
+| **6. 23-Section Report** | Compiles exhaustive migration audit with exact AWS Console click paths and AWS CLI commands. | `EC2_TO_LAMBDA_MIGRATION_REPORT.md` |
+| **7. Code & IaC Synthesis** | Generates serverless entrypoint adapter, Graviton build script, and AWS SAM template. | `lambda_main.go`, `build_lambda.sh`, `template.yaml` |
+| **8. Operator Guide** | Details exact environment variables, IAM roles, and API Gateway trigger configurations for human review. | `USER.md` & `MIGRATION_REPORT.md` |
+| **9. Git Automation & PR** | Creates isolated branch, commits artifacts, pushes to `origin`, and prints GitHub Pull Request link. | `lambda-migration-<timestamp>` |
 
 ---
 
@@ -198,6 +199,7 @@ usage: daroga [repo] [--push | --no-push] [--remote REMOTE]
               [--provider {auto,groq,openai,gemini,claude,anthropic,xai,offline}]
               [--model MODEL] [--api-key API_KEY] [--base-url BASE_URL]
               [--offline] [--audit-only]
+              [--vm-access] [--ssh-key SSH_KEY] [--ssh-user SSH_USER]
 ```
 
 | Flag | Description | Default |
@@ -208,6 +210,9 @@ usage: daroga [repo] [--push | --no-push] [--remote REMOTE]
 | `--remote` | Remote repository name to push to | `origin` |
 | `--audit-only` | Run read-only audit to produce report without code generation or branching | `False` |
 | `--offline` | Run offline using deterministic architecture engine (zero API calls) | `False` |
+| `--vm-access` | Enable in-guest VM inspection via AWS SSM Run Command or SSH | `False` |
+| `--ssh-key` | Path to private SSH key (`.pem`) for direct EC2 guest inspection | Auto-discovered from `~/.ssh/` |
+| `--ssh-user` | SSH remote username for in-guest VM inspection | Auto-detected (`ec2-user`, `ubuntu`) |
 | `--region` | AWS region override (e.g. `us-east-1`, `eu-west-1`) | Auto-detected from AWS config |
 | `--instance-id` | Specific EC2 instance ID to inspect | Auto-detected |
 | `--cdp-url` | Chrome DevTools Protocol URL for live AWS Console inspection | `http://127.0.0.1:9222` |
@@ -220,18 +225,51 @@ usage: daroga [repo] [--push | --no-push] [--remote REMOTE]
 # 1. Standard end-to-end autonomous migration with remote push
 daroga /path/to/my-ec2-service
 
-# 2. Local-only migration (no git push)
+# 2. Migration with live In-Guest EC2 VM inspection (SSM / SSH)
+daroga /path/to/my-ec2-service --vm-access
+
+# 3. Specify explicit SSH key for VM inspection
+daroga /path/to/my-ec2-service --vm-access --ssh-key ~/.ssh/my-key.pem
+
+# 4. Local-only migration (no git push)
 daroga /path/to/my-ec2-service --no-push
 
-# 3. Read-only architectural audit (no code generation, no git branch)
+# 5. Read-only architectural audit (no code generation, no git branch)
 daroga /path/to/my-ec2-service --audit-only
 
-# 4. Force Zero-API Offline Mode
+# 6. Force Zero-API Offline Mode
 daroga /path/to/my-ec2-service --offline
 
-# 5. Use specific AI provider and model
-daroga /path/to/my-ec2-service --provider groq --model llama-3.3-70b-versatile
+# 7. Use specific AI provider and model
+daroga /path/to/my-ec2-service --provider groq --model openai/gpt-oss-120b
 ```
+
+---
+
+## In-Guest VM Inspection (`--vm-access`)
+
+When migrating a legacy EC2 workload, source code alone might not tell the full story: background daemons, listening socket ports, systemd unit definitions, and local cron jobs often run inside the VM.
+
+Passing `--vm-access` instructs DAROGA to perform a **non-destructive, strictly read-only in-guest telemetry capture**:
+
+```bash
+daroga "C:\Users\username\Desktop\code\golab" --vm-access
+```
+
+### How In-Guest VM Inspection Operates:
+1. **AWS Systems Manager (SSM) Run Command**:
+   If the EC2 instance has the `AmazonSSMManagedInstanceCore` IAM policy attached, DAROGA executes commands securely via AWS SSM with zero open ports and no SSH keys required.
+2. **Direct SSH Key Execution (Fallback)**:
+   If SSM is not connected, DAROGA scans local candidate key directories (`~/.ssh/` and `~/Downloads/`) or uses `--ssh-key <path>`. It connects via standard SSH port 22 using strictly read-only diagnostics:
+   - Operating System & Kernel: `/etc/os-release`, `uname -srm`
+   - Active Listening Ports & Sockets: `ss -tulpn` / `netstat -tulpn`
+   - Active Services & Background Daemons: `systemctl list-units --type=service --state=running`
+   - Running Processes: `ps aux --sort=-%mem`
+   - Deployed Application Layout: `/opt`, `/var/www`, `/home/*`
+   - Active Docker Containers: `docker ps`
+   - Root Disk Capacity: `df -h /`
+3. **LLM Context Synthesis**:
+   The extracted telemetry is injected directly into the LLM migration planning loop, ensuring that generated serverless handlers, environment variables, and memory sizing accurately reflect the actual live VM workload.
 
 ---
 

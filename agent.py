@@ -414,8 +414,21 @@ class UnifiedAIClient:
                 clean_m = {"role": m["role"]}
                 if m.get("content") is not None and m.get("content") != "":
                     text = str(m["content"])
-                    if (m.get("role") == "tool" and i < len(messages_window) - 2) or len(text) > 1000:
-                        text = text[:180] + "... [truncated for 8K TPM]"
+                    role = m.get("role")
+                    if role == "tool":
+                        # If tool message is older than latest turn, keep it minimal
+                        if i < len(messages_window) - 2:
+                            if len(text) > 150:
+                                text = text[:150] + "... [pruned]"
+                        elif len(text) > 2500:
+                            text = text[:2500] + "... [truncated]"
+                    elif role == "user":
+                        # Never over-truncate user instruction; allow up to 4500 chars
+                        if len(text) > 4500:
+                            text = text[:4500] + "... [truncated]"
+                    elif role == "assistant":
+                        if len(text) > 2000:
+                            text = text[:2000]
                     clean_m["content"] = text
                 elif m["role"] == "assistant" and not m.get("tool_calls"):
                     clean_m["content"] = ""
@@ -729,15 +742,23 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
             return res
 
         if name == "read_file":
-            rel_path = args["path"]
+            rel_path = args.get("path", "")
+            if "report" in rel_path.lower():
+                log_warn(f"Intercepted read of report '{rel_path}' - directing agent to author deliverables.")
+                return (
+                    f"NOTICE: '{rel_path}' is an informational audit report generated for the human operator. "
+                    f"Do not inspect this report. You already have the verified architecture findings in your prompt. "
+                    f"Proceed immediately to calling 'write_file' to create 'backend/lambda_main.go', "
+                    f"'backend/build_lambda.sh', 'template.yaml', and 'USER.md'."
+                )
             log_step("READING", f"Inspecting source code: '{rel_path}'", Colors.CYAN)
             target = safe_resolve_path(repo, rel_path)
             if not target.exists():
                 log_warn(f"File not found: '{rel_path}'")
                 return f"ERROR: File '{rel_path}' does not exist."
             content = target.read_text(encoding="utf-8", errors="replace")
-            # Limit to 5,000 characters to strictly preserve free tier token quotas
-            truncated = content[:5000]
+            # Limit to 3,000 characters to strictly preserve free tier token quotas
+            truncated = content[:3000]
             log_success(f"Loaded {len(truncated)} characters from '{rel_path}'")
             return truncated
 
@@ -894,13 +915,44 @@ def run_agent_loop(
             context_bulletins.append(f"Exposed Ports: {', '.join(map(str, getattr(rep, 'exposed_ports', [])))}")
             context_bulletins.append(f"Frameworks: {', '.join(getattr(rep, 'frameworks', []))}")
 
+        # In-Guest VM Telemetry injection (from --vm-access / SSH / SSM)
+        guest = getattr(audit_res, "guest_telemetry", None)
+        if guest and getattr(guest, "accessible", False):
+            context_bulletins.append(f"In-Guest VM Telemetry: OS '{guest.os_release}' via {guest.access_method}")
+            if guest.listening_ports:
+                ports_desc = [f"{b.port}/{b.protocol}" if hasattr(b, 'protocol') else str(b) for b in guest.listening_ports[:5]]
+                context_bulletins.append(f"In-Guest Live Listening Sockets: {', '.join(ports_desc)}")
+            if guest.active_services:
+                context_bulletins.append(f"In-Guest Active Services: {', '.join(guest.active_services[:6])}")
+
     audit_summary_str = "\n".join(f"- {b}" for b in context_bulletins)
+
+    # Pre-extract target entrypoint source snippet so LLM doesn't need to read files
+    entrypoint_code = ""
+    target_ep_name = ""
+    if audit_res is not None and getattr(audit_res, "repo", None) and getattr(audit_res.repo, "entrypoints", None):
+        for ep_cand in audit_res.repo.entrypoints:
+            ep_file = repo / ep_cand
+            if ep_file.is_file():
+                try:
+                    entrypoint_code = ep_file.read_text(encoding="utf-8", errors="replace")[:1200]
+                    target_ep_name = ep_cand
+                    break
+                except Exception:
+                    pass
 
     user_instruction = (
         f"Repository '{repo.name}' has been deterministically scanned and audited with the following findings:\n"
         f"{audit_summary_str}\n\n"
+    )
+    if entrypoint_code:
+        user_instruction += (
+            f"TARGET ENTRYPOINT PREVIEW ('{target_ep_name}'):\n"
+            f"```\n{entrypoint_code}\n```\n\n"
+        )
+    user_instruction += (
         f"INSTRUCTION: You do NOT need to explore or read files repeatedly. The architecture, entrypoints, and runtime are already verified above.\n"
-        f"Generate the production deliverables immediately using `write_file`:\n"
+        f"Generate the production deliverables immediately using `write_file` in this exact order:\n"
         f"1. Serverless adapter (`backend/lambda_main.go` for Go / `lambda_function.py` for Python / `lambda.js` for Node).\n"
         f"2. Build script (`backend/build_lambda.sh`) if Go.\n"
         f"3. Production AWS SAM specification (`template.yaml`).\n"
@@ -914,6 +966,8 @@ def run_agent_loop(
     ]
 
     log_step("AGENT", f"Session active: provider '{client.provider.upper()}' | model '{client.model}' (Max turns: {max_turns})")
+
+    exploratory_count = 0
 
     for turn in range(1, max_turns + 1):
         log_step("AGENT", f"Turn {turn}/{max_turns}: Reasoning with {client.provider.upper()} ({client.model})...", Colors.BLUE)
@@ -967,6 +1021,18 @@ def run_agent_loop(
             if func_name == "finish":
                 completion_data = args
                 tool_output = "Migration finalized."
+            elif func_name in ("list_files", "read_file", "search"):
+                exploratory_count += 1
+                if exploratory_count > 2:
+                    log_warn("Exploratory budget exhausted - prompting agent to generate deliverables.")
+                    tool_output = (
+                        "INSPECTION BUDGET EXHAUSTED: You have already inspected the codebase. "
+                        "Do not read further files. Proceed immediately to 'write_file' to produce "
+                        "'backend/lambda_main.go', 'backend/build_lambda.sh' (for Go), 'template.yaml', "
+                        "and 'USER.md', then call 'finish'."
+                    )
+                else:
+                    tool_output = execute_tool(repo, func_name, args)
             else:
                 tool_output = execute_tool(repo, func_name, args)
 
@@ -1536,6 +1602,8 @@ Examples:
                             ssh_user=args.ssh_user,
                         )
                         if guest_rep.accessible:
+                            if audit_res is not None:
+                                audit_res.guest_telemetry = guest_rep
                             log_success(f"In-Guest VM Telemetry captured via {guest_rep.access_method}: OS '{guest_rep.os_release}', {len(guest_rep.active_services)} active services.")
                         else:
                             log_warn(guest_rep.error_message or "In-guest inspection did not connect.")

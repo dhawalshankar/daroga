@@ -31,6 +31,7 @@ DAROGA has one singular purpose: **Assess how the user's specific existing EC2-h
 - Decoupling asynchronous or batch worker jobs to AWS SQS or worker queues while hosting public API routes on AWS Lambda.
 - Read-only inspection of live EC2 instances, VPC subnets, Security Groups, and IAM instance profiles.
 - Read-only inspection of active AWS Management Console tabs via CDP.
+- Read-only in-guest VM inspection (`--vm-access`) via AWS Systems Manager (SSM) Run Command or Direct SSH execution to audit live listening ports (`ss -tulpn`), active services, and OS distribution.
 - Generation of the comprehensive 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md`.
 - Authoring human-operator manuals (`USER.md`) detailing AWS Console clicks and CLI commands.
 

@@ -201,7 +201,19 @@ daroga "C:\Users\YourName\Desktop\code\my-application" --push
 
 ---
 
-### 2. The "Report Only" Command (No Code Changes, No Git Push)
+### 2. Live In-Guest EC2 VM Telemetry (`--vm-access`)
+If you want DAROGA to look inside your running EC2 instance to discover active background processes, open network sockets, and running services:
+
+```bash
+daroga "C:\path\to\my-application" --vm-access
+```
+- **How It Works**: Connects securely via AWS Systems Manager (SSM) or automatically auto-discovers your `.pem` key from `~/.ssh/`.
+- **Safety**: 100% read-only. Runs `uname`, `ps`, and `ss -tulpn` without altering any files on your virtual machine.
+- **Benefit**: Ensures the generated AWS Lambda configuration includes the exact environment variables, ports, and memory capacity used in production.
+
+---
+
+### 3. The "Report Only" Command (No Code Changes, No Git Push)
 Use this if you just want an executive feasibility report and cost breakdown to present to your manager, without modifying code or touching Git:
 
 ```bash

@@ -59,6 +59,9 @@ flowchart TD
 
 ### Audit & Inspection Options
 - `--audit-only` (or `--audit`): Runs the complete deterministic inspection and outputs `EC2_TO_LAMBDA_MIGRATION_REPORT.md` **without** generating code, modifying files, or creating Git branches. Completely read-only.
+- `--vm-access`: Enables live, non-destructive in-guest VM inspection via AWS Systems Manager (SSM) Run Command or Direct SSH execution. Discovers real listening sockets (`ss -tulpn`), active systemd services, installed runtime environments, Docker containers, and filesystem paths.
+- `--ssh-key <PATH>`: Explicit path to the private SSH key (`.pem`) used to authenticate for direct in-guest VM inspection. If omitted when `--vm-access` is enabled, candidate `.pem` keys are auto-discovered from `~/.ssh/` and `~/Downloads/`.
+- `--ssh-user <USER>`: Remote SSH user for VM access (default: auto-detected, typically `ec2-user`, `ubuntu`, or `admin`).
 - `--region <REGION>`: Explicit AWS region to inspect (e.g. `us-east-1`, `eu-west-1`). Defaults to `AWS_REGION`, `AWS_DEFAULT_REGION`, or `us-east-1`.
 - `--instance-id <INSTANCE_ID>`: Specific EC2 instance ID to target for inspection (e.g. `i-0123456789abcdef0`). If omitted, DAROGA automatically detects instances in the target region.
 - `--cdp-url <URL>`: *(Default: `http://127.0.0.1:9222`)* The Chrome DevTools Protocol endpoint URL for inspecting active AWS Management Console tabs.

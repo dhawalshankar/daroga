@@ -25,11 +25,12 @@ flowchart TD
         Orch --> S1["repository_scanner<br/>• AST Parsing<br/>• Language Stack<br/>• Monorepo Target"]
         Orch --> S2["ec2_inspector<br/>• STS Caller Identity<br/>• EC2 & VPC Subnets<br/>• Security Groups"]
         Orch --> S3["browser_inspector<br/>• Playwright CDP :9222<br/>• AWS Console Tabs<br/>• Live UI State"]
-        Orch --> S4["lambda_compatibility<br/>• 15-min Timeout<br/>• 6MB Payload<br/>• Graviton arm64"]
-        Orch --> S5["cost_estimator<br/>• EC2 24/7 Hourly<br/>• Lambda Free Tier<br/>• 100% Savings Model"]
+        Orch --> S4["vm_inspector (--vm-access)<br/>• AWS SSM Run Command<br/>• Direct SSH Key Execution<br/>• In-Guest Sockets & Daemons"]
+        Orch --> S5["lambda_compatibility<br/>• 15-min Timeout<br/>• 6MB Payload<br/>• Graviton arm64"]
+        Orch --> S6["cost_estimator<br/>• EC2 24/7 Hourly<br/>• Lambda Free Tier<br/>• 100% Savings Model"]
     end
 
-    S1 & S2 & S3 & S4 & S5 --> Mapper["architecture_mapper<br/>(Serverless Topology & Graviton Sizing)"]
+    S1 & S2 & S3 & S4 & S5 & S6 --> Mapper["architecture_mapper<br/>(Serverless Topology & Graviton Sizing)"]
     Mapper --> RepGen["report_generator<br/>(23-Section Audit Report)"]
     RepGen --> CodeGen["Serverless Code Generator<br/>• lambda_main.go / py / js<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md (Console Manual)"]
     CodeGen --> GitOrch["Git Orchestration Layer<br/>• Stage & Commit 6 Deliverables<br/>• Push to origin<br/>• Construct GitHub PR URL<br/>• Restore main Workspace"]
@@ -82,7 +83,21 @@ sequenceDiagram
 - Inspects active browser pages without requiring stored cookies, credentials, or re-authenticating.
 - Scans for open AWS Management Console tabs (EC2 Dashboard, VPC Management, Lambda Console, CloudWatch Logs) and incorporates the user's active console context into the final report.
 
-### 3.4 Lambda Compatibility Engine (`daroga/lambda_compatibility.py`)
+### 3.4 In-Guest VM Inspector (`daroga/vm_inspector.py`)
+- Initiated when `--vm-access` or `--ssh-key` is supplied.
+- Operates in strictly read-only, non-destructive mode via:
+  1. **AWS Systems Manager (SSM) Run Command**: Zero-open-port, IAM-governed execution requiring no local SSH keys.
+  2. **Direct SSH Execution**: Auto-discovers local candidate `.pem` keys in `~/.ssh/` and `~/Downloads/`, connecting to port 22.
+- Captures in-guest telemetry that cannot be seen from source code alone:
+  - Real listening TCP sockets and PID bindings (`ss -tulpn`)
+  - Active systemd units and background services (`systemctl list-units --type=service --state=running`)
+  - Running processes and memory consumption (`ps aux --sort=-%mem`)
+  - Live Docker daemon status and containers (`docker ps`)
+  - Deployed application directory paths (`/opt`, `/var/www`, `/home`)
+  - OS distribution (`/etc/os-release`) and root disk capacity (`df -h /`)
+- Injects live VM findings directly into the downstream LLM context to ground serverless code generation in actual production runtime conditions.
+
+### 3.5 Lambda Compatibility Engine (`daroga/lambda_compatibility.py`)
 - Evaluates application architecture against strict AWS Lambda service quotas:
   - **Execution Duration**: Maximum 900 seconds (15 minutes).
   - **Payload Size**: Synchronous invocation limit of 6 MB (request/response).
@@ -91,22 +106,22 @@ sequenceDiagram
   - **Container Sandboxes**: Identifies if dynamic Docker runs need decoupling to SQS + ECS Fargate.
 - Computes an overall feasibility score (0–100%) and categorizes the decision into `MIGRATE` or `MIGRATE (WITH DECOUPLING)`.
 
-### 3.5 Architecture Mapper (`daroga/architecture_mapper.py`)
+### 3.6 Architecture Mapper (`daroga/architecture_mapper.py`)
 - Synthesizes the target serverless topology:
   - **Compute**: AWS Lambda running on **ARM64 Graviton** (`provided.al2023` for Go, `python3.12` for Python, `nodejs20.x` for Node.js) for 20% lower cost and higher performance.
   - **Ingress**: Amazon API Gateway HTTP API v2 with `$default` stage, `/` and `/{proxy+}` catch-all routes.
   - **Security & IAM**: Custom execution role (`<service>-LambdaExecutionRole`) with `AWSLambdaBasicExecutionRole` and VPC interface policies.
 
-### 3.6 Cost Estimator (`daroga/cost_estimator.py`)
+### 3.7 Cost Estimator (`daroga/cost_estimator.py`)
 - Compares baseline 24/7 EC2 hourly expenditure against AWS Lambda request pricing:
   - **EC2 Baseline**: Calculates monthly instance cost (e.g. $9.99/mo for `t3.micro`).
   - **AWS Lambda Free Tier**: 1,000,000 requests/month and 3,200,000 compute seconds/month included free.
   - **Projected Savings**: Demonstrates up to 100% cost reduction for small-to-medium traffic tiers.
 
-### 3.7 Report Generator (`daroga/report_generator.py`)
-- Compiles the authoritative 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md` combining AST data, live AWS state, CDP context, compatibility evaluations, cost projections, and copy-paste-ready AWS CLI and Console instructions.
+### 3.8 Report Generator (`daroga/report_generator.py`)
+- Compiles the authoritative 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md` combining AST data, live AWS state, CDP context, in-guest VM telemetry, compatibility evaluations, cost projections, and copy-paste-ready AWS CLI and Console instructions.
 
-### 3.8 Serverless Code & IaC Generator (`agent.py`)
+### 3.9 Serverless Code & IaC Generator (`agent.py`)
 - Synthesizes language-specific serverless adapters:
   - **Go**: `backend/lambda_main.go` using `httpadapter.HandlerAdapter` and `backend/build_lambda.sh` cross-compiling the Linux `bootstrap` binary.
   - **Python**: `backend/lambda_function.py` using `apig_wsgi` or `mangum`.
