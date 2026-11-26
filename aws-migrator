@@ -1,3 +1,16 @@
 #!/usr/bin/env bash
+# OS-Agnostic CLI entrypoint for Linux and macOS
+set -e
+
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+else
+    echo "ERROR: Neither 'python3' nor 'python' was found in your PATH." >&2
+    echo "Please install Python 3.10+ to run aws-migrator." >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python3 "$SCRIPT_DIR/agent.py" "$@"
+exec "$PYTHON_CMD" "$SCRIPT_DIR/agent.py" "$@"

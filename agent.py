@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -34,8 +35,23 @@ from typing import Any, Dict, List, Optional, Tuple
 from groq import BadRequestError, Groq, RateLimitError
 
 # ==============================================================================
-# Terminal UI & Formatting
+# OS-Agnostic Terminal UI & Formatting
 # ==============================================================================
+def init_terminal_colors():
+    """Enables ANSI escape sequence processing on Windows 10/11 consoles."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            h_out = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(h_out, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(h_out, mode.value | 0x0004)
+        except Exception:
+            pass
+
+init_terminal_colors()
+
 class Colors:
     HEADER = "\033[95m"
     BLUE = "\033[94m"
@@ -100,6 +116,7 @@ ALLOWED_COMMAND_PREFIXES = (
     "python -m py_compile",
     "python3 -m py_compile",
     "python -m pytest",
+    "python3 -m pytest",
     "pytest",
     "sam validate",
     "node --check",
@@ -302,7 +319,8 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                 rel_parts = p.relative_to(repo).parts
                 if any(x in rel_parts for x in (".git", "__pycache__", "node_modules", ".venv", "venv", ".idea")):
                     continue
-                files.append(str(p.relative_to(repo)))
+                # Use as_posix() so file paths use forward slashes uniformly across Windows, Linux, and macOS
+                files.append(p.relative_to(repo).as_posix())
             return "\n".join(files[:250]) if files else "(empty repository)"
 
         if name == "read_file":
@@ -331,8 +349,14 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                 return f"BLOCKED: Command contains disallowed keyword. Disallowed: {BLOCKED_COMMAND_KEYWORDS}"
 
             try:
+                # OS-agnostic command tokenization
+                cmd_parts = shlex.split(cmd, posix=(os.name != "nt"))
+                # Map python / python3 binary to the active Python interpreter so py_compile works on all OS
+                if cmd_parts and cmd_parts[0] in ("python", "python3"):
+                    cmd_parts[0] = sys.executable
+
                 proc = subprocess.run(
-                    shlex.split(cmd),
+                    cmd_parts,
                     cwd=repo,
                     capture_output=True,
                     text=True,
