@@ -10,7 +10,7 @@ on an isolated remote git branch.
 Multi-Provider AI Engine:
 - Groq (default / ultra-fast inference)
 - OpenAI (ChatGPT: gpt-4o, o1, o3-mini)
-- Google Gemini (gemini-2.0-flash, gemini-1.5-pro)
+- Google Gemini (gemini-4-hydrogen, gemini-1.5-pro)
 - Anthropic Claude (claude-3-5-sonnet, claude-3-5-haiku)
 - xAI (grok-2, grok-beta)
 - Custom / Local OpenAI-compatible endpoints (Ollama, DeepSeek, vLLM, OpenRouter)
@@ -367,6 +367,14 @@ class UnifiedAIClient:
             self.openai_client = OpenAI(api_key="ollama", base_url=base)
             self.mode = "openai_compat"
 
+        elif self.provider in ("custom", "openrouter", "vllm", "lmstudio", "local"):
+            if OpenAI is None:
+                raise ImportError("OpenAI SDK is required for custom/OSS endpoints. Run: pip install openai")
+            base = self.base_url or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "http://localhost:1234/v1")
+            key = self.api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "not-needed")
+            self.openai_client = OpenAI(api_key=key, base_url=base)
+            self.mode = "openai_compat"
+
         elif self.provider in ("offline", "heuristic"):
             self.mode = "offline"
         else:
@@ -502,24 +510,28 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     # Explicit provider specified
     if p != "auto":
         default_models = {
-            "groq": "llama-3.1-8b-instant",
+            "groq": "openai/gpt-oss-120b",
             "openai": "gpt-4o-mini",
-            "gemini": "gemini-2.0-flash",
+            "gemini": "gemini-4-hydrogen",
             "claude": "claude-3-5-haiku-20241022",
             "anthropic": "claude-3-5-haiku-20241022",
             "xai": "grok-2-latest",
             "ollama": "llama3.1:8b",
+            "openrouter": "openai/gpt-oss-120b",
+            "vllm": "default",
+            "lmstudio": "default",
             "custom": "default",
+            "local": "llama3.1:8b",
             "offline": "static-analysis-engine",
             "heuristic": "static-analysis-engine",
         }
-        model = model_opt or default_models.get(p, "llama-3.1-8b-instant")
+        model = model_opt or default_models.get(p, "openai/gpt-oss-120b")
         return p, model
 
     # Auto-detection from model name if provided
     if model_opt:
         m = model_opt.lower()
-        if m.startswith("openai/"):
+        if "gpt-oss" in m or "oss-gpt" in m or "120b" in m or m.startswith("openai/"):
             return "groq", model_opt
         if "claude" in m:
             return "anthropic", model_opt
@@ -534,11 +546,11 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
 
     # Auto-detection from environment variables
     if os.environ.get("GROQ_API_KEY"):
-        return "groq", model_opt or "llama-3.1-8b-instant"
+        return "groq", model_opt or "openai/gpt-oss-120b"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai", model_opt or "gpt-4o"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini", model_opt or "gemini-2.0-flash"
+        return "gemini", model_opt or "gemini-4-hydrogen"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic", model_opt or "claude-3-5-sonnet-20241022"
     if os.environ.get("XAI_API_KEY"):
@@ -548,7 +560,7 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
 
     # Default fallback
     if os.environ.get("GROQ_API_KEY"):
-        return "groq", model_opt or "llama-3.1-8b-instant"
+        return "groq", model_opt or "openai/gpt-oss-120b"
     return "offline", "static-analysis-engine"
 
 
@@ -1231,7 +1243,7 @@ def daroga_main():
 Supported AI Providers:
   • Groq:      export GROQ_API_KEY="..."       (Default: llama-3.3-70b-versatile)
   • OpenAI:    export OPENAI_API_KEY="..."     (Default: gpt-4o)
-  • Gemini:    export GEMINI_API_KEY="..."     (Default: gemini-2.0-flash)
+  • Gemini:    export GEMINI_API_KEY="..."     (Default: gemini-4-hydrogen)
   • Claude:    export ANTHROPIC_API_KEY="..."  (Default: claude-3-5-sonnet-20241022)
   • xAI:       export XAI_API_KEY="..."        (Default: grok-2-latest)
   • Offline:   --offline                        (Zero-API deterministic heuristic engine)
@@ -1279,7 +1291,7 @@ Examples:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model identifier override (e.g. gpt-4o, gemini-2.0-flash, llama-3.3-70b-versatile)",
+        help="Model identifier override (e.g. gpt-4o, gemini-4-hydrogen, llama-3.3-70b-versatile)",
     )
     parser.add_argument("--api-key", default=None, help="Optional API key override")
     parser.add_argument("--base-url", default=None, help="Custom base URL for OpenAI-compatible endpoints")

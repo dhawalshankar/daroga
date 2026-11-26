@@ -353,15 +353,17 @@ flowchart TD
 
 | Provider | Recommended Model | Best For | Why Use It In A Demo? |
 |---|---|---|---|
-| **Groq (Top Recommendation)** ⚡ | `llama-3.3-70b-versatile` | **Live Stage Demos & Audits** | **Instant response speed (300+ tokens/sec)**. Agent decision loops and AST inspections execute live without awkward loading pauses. Free API keys at [console.groq.com](https://console.groq.com). |
+| **Groq (Top Recommendation)** ⚡ | `openai/gpt-oss-120b` (OpenAI GPT-OSS 120B) | **Live Stage Demos & Audits** | **Instant speed (~500 tokens/sec)**. OpenAI's official open-weight 120B model running accelerated on Groq LPUs. Unbeatable agentic reasoning with zero latency. Free keys at [console.groq.com](https://console.groq.com). |
+| **Groq (Llama)** 🦙 | `llama-3.3-70b-versatile` | **High-Throughput Open Source** | 300+ tokens/sec, proven general coding and instruction-following. |
 | **OpenAI** 🧠 | `gpt-4o` | **Client & Executive Presentations** | Maximum brand recognition. Evaluators immediately trust GPT-4o reasoning for code generation. |
 | **Google Gemini** 🌐 | `gemini-2.0-flash` | **High Free Limits & Speed** | Extremely fast and generous free rate limits via Google AI Studio. |
 | **Anthropic Claude** 🏛️ | `claude-3-5-sonnet-20241022` | **Complex Enterprise Codebases** | Industry-leading coding and tool-calling accuracy. |
 | **Offline Heuristic Mode** 🔒 | `static-analysis-engine` | **Air-Gapped / Privacy Clients** | Zero API calls, zero token costs, runs completely offline via `--offline`. |
 
 ```bash
-# 1. Groq (Recommended for live demos: instant 300 tokens/sec speed):
+# 1. Groq (OpenAI GPT-OSS 120B — recommended for demo: ~500 tokens/sec speed):
 export GROQ_API_KEY="gsk_..."
+daroga /path/to/my-ec2-app --provider groq --model openai/gpt-oss-120b
 
 # 2. OpenAI:
 export OPENAI_API_KEY="sk-..."

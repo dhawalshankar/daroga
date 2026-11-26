@@ -66,69 +66,114 @@ When demonstrating DAROGA to clients, evaluators, or management, choose based on
 
 ```mermaid
 flowchart TD
-    Start["Demonstration Goal"] --> Choice{"What is your priority?"}
+    Start["Demonstration Goal"] --> Choice{"Which model setup?"}
     
-    Choice -->|"Ultra-Fast Live Demo & Free"| Groq["Groq API (Recommended)<br/>Model: llama-3.3-70b-versatile<br/>Speed: 300+ tokens/sec, instant response"]
-    Choice -->|"Maximum Brand Recognition"| OpenAI["OpenAI API<br/>Model: gpt-4o<br/>Industry gold standard reasoning"]
-    Choice -->|"Google Cloud / Big Context"| Gemini["Google Gemini API<br/>Model: gemini-2.0-flash<br/>High free tier, fast execution"]
-    Choice -->|"No Internet / Zero API Cost"| Offline["Offline Engine (--offline)<br/>Zero API keys, 100% deterministic"]
+    Choice -->|"Open-Source (OSS) / Local"| OSS["1. Open-Source GPT / Local<br/>• Ollama: llama3.1 / qwen2.5<br/>• OpenRouter: Free OSS models<br/>• vLLM / LM Studio / Local endpoint"]
+    Choice -->|"Ultra-Fast Cloud Demo"| Groq["2. Hosted OSS (Groq)<br/>• Llama 3.3 70B (300+ tok/s)<br/>• Open-source weights, instant live speed"]
+    Choice -->|"Proprietary Commercial LLM"| Commercial["3. Commercial Frontier<br/>• OpenAI GPT-4o<br/>• Google Gemini 2.0 Flash"]
+    Choice -->|"Air-Gapped / Zero Network"| Offline["4. Offline Engine (--offline)<br/>• 100% deterministic local rules<br/>• Zero keys, zero network calls"]
 ```
 
-| Provider | Recommended Model | Best For | Why Use It In A Demo? |
-|---|---|---|---|
-| **Groq (Top Pick)** ⚡ | `llama-3.3-70b-versatile` | **Live Stage Demos & Audits** | **Instant speed (300+ tokens/sec)**. The agent loops and tool calls run before the audience gets bored. Generous free API keys available at [console.groq.com](https://console.groq.com). |
-| **OpenAI** 🧠 | `gpt-4o` | **Client & Executive Presentations** | Highest brand trust. Evaluators immediately recognize GPT-4o autonomous reasoning. |
-| **Google Gemini** 🌐 | `gemini-2.0-flash` | **Cost Efficiency & Speed** | Extremely fast and generous free tier via Google AI Studio. |
-| **Anthropic Claude** 🏛️ | `claude-3-5-sonnet-20241022` | **Complex Polyglot Repositories** | Unmatched code architecture synthesis and precision tool execution. |
-| **Offline Engine** 🔒 | `static-analysis-engine` | **Air-gapped / Privacy-Strict Clients** | 100% free, runs without internet or keys using `--offline`. |
+---
+
+### A. The Best Demo Setup: OpenAI GPT-OSS 120B on Groq ⚡ (500+ tok/s)
+
+OpenAI's official open-weight flagship model **`openai/gpt-oss-120b`** (120B parameter Mixture-of-Experts reasoning model) runs hosted on **Groq's LPUs**.
+
+```mermaid
+flowchart LR
+    Demo["Live AI Demo"] --> Groq["Groq LPU Hardware"]
+    Groq --> Model["OpenAI GPT-OSS 120B<br/>(openai/gpt-oss-120b)"]
+    Model --> Win1["Blazing Speed: ~500 tokens/sec"]
+    Model --> Win2["Open-Weight / Open-Source (OSS)"]
+    Model --> Win3["Advanced Agentic & Code Reasoning"]
+```
+
+#### Why it is the ultimate demonstration choice:
+1. **Open-Source Sovereignty**: It is an open-weight model (`GPT-OSS 120B`), not a closed proprietary black box.
+2. **Insane Speed (~500 tokens/sec)**: Powered by Groq's LPU, the agent loops and AST inspections execute virtually instantaneously without making the audience wait.
+3. **Advanced Tool-Calling**: Designed specifically for code generation, agentic reasoning, and AWS architecture synthesis.
+
+#### How to run it:
+1. Get your free Groq API key from [https://console.groq.com/keys](https://console.groq.com/keys).
+2. Set it in PowerShell:
+   ```powershell
+   $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
+   ```
+3. Run DAROGA (automatically defaults to `openai/gpt-oss-120b`):
+   ```powershell
+   daroga "C:\path\to\my-app"
+   ```
+   Or explicitly pass the model:
+   ```powershell
+   daroga "C:\path\to\my-app" --provider groq --model openai/gpt-oss-120b
+   ```
 
 ---
 
-### How to Set Your API Key
+### B. Running Local Open-Source Models (Ollama / vLLM / Local)
+Run Llama 3.1, Qwen 2.5, or DeepSeek locally on your own laptop:
+```bash
+# 1. Install & start Ollama (from ollama.ai), then pull your model:
+ollama run llama3.1:8b
 
-Set **one** of the following environment variables in your terminal before running DAROGA:
+# 2. Run DAROGA pointing to your local Ollama:
+daroga "C:\path\to\my-app" --provider ollama --model llama3.1:8b
+```
+- **Why use it in a demo?**: Demonstrates 100% data privacy and open-source sovereignty—no company code ever leaves the local machine.
 
-#### Option 1: Groq (Recommended for Demo)
-1. Get a free API key at: [https://console.groq.com/keys](https://console.groq.com/keys)
-2. Set the key in your terminal:
-   - **Windows PowerShell**:
-     ```powershell
-     $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
-     ```
-   - **Windows CMD**:
-     ```cmd
-     set GROQ_API_KEY=gsk_your_groq_api_key_here
-     ```
-   - **Mac / Linux**:
-     ```bash
-     export GROQ_API_KEY="gsk_your_groq_api_key_here"
-     ```
+#### 2. Via OpenRouter (Free Open-Source Weights Hosted in the Cloud)
+If you want open-source models like `llama-3.3-70b-instruct` or `qwen-2.5-coder` hosted in the cloud with an OpenAI-compatible API:
+```bash
+# Set OpenRouter key:
+$env:OPENROUTER_API_KEY="sk-or-v1-..."
 
-#### Option 2: OpenAI (GPT-4o)
-1. Get an API key at: [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-2. Set the key in your terminal:
-   - **Windows PowerShell**:
-     ```powershell
-     $env:OPENAI_API_KEY="sk_your_openai_api_key_here"
-     ```
-   - **Mac / Linux**:
-     ```bash
-     export OPENAI_API_KEY="sk_your_openai_api_key_here"
-     ```
+# Run DAROGA with OpenRouter OSS model:
+daroga "C:\path\to\my-app" --provider openrouter --model "meta-llama/llama-3.3-70b-instruct"
+```
 
-#### Option 3: Google Gemini
-1. Get an API key at: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-2. Set the key in your terminal:
-   - **Windows PowerShell**:
-     ```powershell
-     $env:GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
-     ```
-   - **Mac / Linux**:
-     ```bash
-     export GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
-     ```
+#### 3. Via Local LM Studio / vLLM / Custom Local Server
+```bash
+# Start your local server on port 1234 or 8000, then run:
+daroga "C:\path\to\my-app" --provider custom --base-url "http://localhost:1234/v1" --model "local-model"
+```
 
 ---
+
+### B. Hosted Open-Source at Maximum Speed: Groq (Llama 3.3 70B)
+If you want to demonstrate an open-source model running at **300+ tokens per second** so the audience doesn't wait:
+- **Windows PowerShell**:
+  ```powershell
+  $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
+  daroga "C:\path\to\my-app"
+  ```
+- Free API key available at [console.groq.com](https://console.groq.com).
+
+---
+
+### C. Commercial Frontier Models (OpenAI GPT-4o / Google Gemini)
+
+#### OpenAI (GPT-4o)
+- **Windows PowerShell**:
+  ```powershell
+  $env:OPENAI_API_KEY="sk_your_openai_api_key_here"
+  daroga "C:\path\to\my-app" --provider openai --model gpt-4o
+  ```
+
+#### Google Gemini
+- **Windows PowerShell**:
+  ```powershell
+  $env:GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
+  daroga "C:\path\to\my-app" --provider gemini --model gemini-2.0-flash
+  ```
+
+---
+
+### D. Zero-API Offline Mode (Deterministic Static Engine)
+If you don't want to use any AI API at all:
+```bash
+daroga "C:\path\to\my-app" --offline
+```
 
 ### B. AWS Credentials (Optional, for Live Cloud Inspection)
 If you have the AWS CLI configured on your computer (`aws configure`), DAROGA automatically reads your live EC2 instance details, security groups, and VPC subnets.
