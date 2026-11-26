@@ -397,20 +397,25 @@ class UnifiedAIClient:
     def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
         if self.mode == "openai_compat":
-            # Strict Context Compaction for 8,000 TPM rate limits (e.g. Groq free tier):
-            # Only retain latest tool output unclipped; prune older tool message bodies to <= 250 chars.
+            # Strict Sliding Window Context Compaction for 8,000 TPM rate limits:
+            # Keep system message, user prompt, and at most the last 4 turns (assistant + tool).
+            # Prune tool outputs older than latest turn to 150 chars.
             tool_msg_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
             prune_set = set(tool_msg_indices[:-1]) if len(tool_msg_indices) > 1 else set()
 
+            # If messages list is long, keep system (0), user (1), and last 6 messages
+            if len(messages) > 8:
+                messages_window = [messages[0], messages[1]] + messages[-6:]
+            else:
+                messages_window = messages
+
             cleaned_messages = []
-            for i, m in enumerate(messages):
+            for i, m in enumerate(messages_window):
                 clean_m = {"role": m["role"]}
                 if m.get("content") is not None and m.get("content") != "":
                     text = str(m["content"])
-                    if i in prune_set and len(text) > 250:
-                        text = text[:250] + "... [truncated to fit 8K TPM rate limit]"
-                    elif len(text) > 1500:
-                        text = text[:1500] + "... [truncated]"
+                    if (m.get("role") == "tool" and i < len(messages_window) - 2) or len(text) > 1000:
+                        text = text[:180] + "... [truncated for 8K TPM]"
                     clean_m["content"] = text
                 elif m["role"] == "assistant" and not m.get("tool_calls"):
                     clean_m["content"] = ""
@@ -430,7 +435,7 @@ class UnifiedAIClient:
                 tools=TOOLS,
                 tool_choice="auto",
                 temperature=0.1,
-                max_tokens=2048,
+                max_tokens=1500,
             )
             choice = resp.choices[0].message
             norm_tools = []
@@ -845,12 +850,20 @@ def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]]) 
 
             log_error(f"{client.provider.upper()} API Error: {err_msg}")
             err_str = err_msg.lower()
-            if "rate_limit" in err_str or "429" in err_str:
-                wait_time = 10 * (attempt + 1)
-                log_warn(f"Rate limit hit. Pausing {wait_time}s (retry {attempt+1}/{max_retries})...")
+            if "rate limit" in err_str or "rate_limit" in err_str or "429" in err_str or "tokens per minute" in err_str:
+                wait_time = 3 * (attempt + 1)
+                # Parse exact retry ms/seconds from Groq error message if present (e.g. "Please try again in 90ms")
+                m_ms = re.search(r"try again in (\d+)ms", err_msg)
+                m_s = re.search(r"try again in ([\d\.]+)s", err_msg)
+                if m_ms:
+                    wait_time = max(1.0, float(m_ms.group(1)) / 1000.0 + 0.5)
+                elif m_s:
+                    wait_time = max(1.0, float(m_s.group(1)) + 0.5)
+
+                log_warn(f"Rate limit hit. Pausing {wait_time:.1f}s (retry {attempt+1}/{max_retries})...")
                 time.sleep(wait_time)
             elif "timeout" in err_str or "connection" in err_str:
-                wait_time = 5 * (attempt + 1)
+                wait_time = 3 * (attempt + 1)
                 log_warn(f"Network timeout. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
