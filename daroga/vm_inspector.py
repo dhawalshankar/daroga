@@ -118,16 +118,47 @@ class VMInspector:
             if ssm_ok:
                 return report
 
-        # 2. Try SSH if key and IP provided
-        if ssh_key_path and public_ip:
-            ssh_ok = self._try_ssh_inspection(public_ip, ssh_key_path, ssh_user, report)
-            if ssh_ok:
-                return report
+        # 2. Auto-discover candidate SSH keys from ~/.ssh or common user paths if not explicitly passed
+        candidate_keys = []
+        if ssh_key_path:
+            candidate_keys.append(ssh_key_path)
+        
+        home = os.path.expanduser("~")
+        auto_paths = [
+            os.path.join(home, ".ssh", "golab-key.pem"),
+            os.path.join(home, ".ssh", "id_rsa"),
+            os.path.join(home, ".ssh", "id_ed25519"),
+            os.path.join(home, "Downloads", "golab-key.pem"),
+            os.path.join(home, "Downloads", "firsttimer.pem"),
+        ]
+        # Scan ~/.ssh for any *.pem
+        ssh_dir = os.path.join(home, ".ssh")
+        if os.path.isdir(ssh_dir):
+            try:
+                for f in os.listdir(ssh_dir):
+                    if f.endswith(".pem"):
+                        auto_paths.append(os.path.join(ssh_dir, f))
+            except Exception:
+                pass
+
+        for p in auto_paths:
+            if os.path.isfile(p) and p not in candidate_keys:
+                candidate_keys.append(p)
+
+        # 3. Try SSH with discovered candidate keys
+        if public_ip:
+            candidate_users = [ssh_user, "ubuntu", "ec2-user", "root"] if ssh_user == "ubuntu" else [ssh_user]
+            for key_p in candidate_keys:
+                for user in candidate_users:
+                    logger.info(f"Attempting in-guest inspection on {public_ip} using SSH key '{key_p}' as user '{user}'...")
+                    ssh_ok = self._try_ssh_inspection(public_ip, key_p, user, report)
+                    if ssh_ok:
+                        return report
 
         report.error_message = (
             f"Could not establish in-guest inspection for {instance_id}. "
             "To enable live VM inspection: attach AmazonSSMManagedInstanceCore IAM role to instance, "
-            "or provide --ssh-key <path>."
+            f"or ensure port 22 is open in Security Group (attempted {len(candidate_keys)} candidate keys)."
         )
         return report
 
