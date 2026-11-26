@@ -871,10 +871,10 @@ def run_agent_loop(
             context_bulletins.append(f"Blockers: {'; '.join(audit_res.blockers)}")
         if getattr(audit_res, "repo", None):
             rep = audit_res.repo
-            context_bulletins.append(f"Target Service Directory: {rep.target_service_directory}")
-            context_bulletins.append(f"Entry Points: {', '.join(rep.entrypoints)}")
-            context_bulletins.append(f"Exposed Ports: {', '.join(map(str, rep.exposed_ports))}")
-            context_bulletins.append(f"Frameworks: {', '.join(rep.target_frameworks)}")
+            context_bulletins.append(f"Target Service Directory: {getattr(rep, 'target_service_directory', 'backend')}")
+            context_bulletins.append(f"Entry Points: {', '.join(getattr(rep, 'entrypoints', []))}")
+            context_bulletins.append(f"Exposed Ports: {', '.join(map(str, getattr(rep, 'exposed_ports', [])))}")
+            context_bulletins.append(f"Frameworks: {', '.join(getattr(rep, 'frameworks', []))}")
 
     audit_summary_str = "\n".join(f"- {b}" for b in context_bulletins)
 
