@@ -279,10 +279,11 @@ TOOLS = [
 # Multi-Provider Unified AI Engine
 # ==============================================================================
 class NormalizedToolCall:
-    def __init__(self, call_id: str, name: str, arguments: str):
+    def __init__(self, call_id: str, name: str, arguments: str, raw_dict: Optional[Dict[str, Any]] = None):
         self.id = call_id
         self.type = "function"
         self.function = type("FunctionObj", (), {"name": name, "arguments": arguments})()
+        self.raw_dict = raw_dict or {}
 
 
 class NormalizedMessage:
@@ -404,7 +405,19 @@ class UnifiedAIClient:
             norm_tools = []
             if choice.tool_calls:
                 for tc in choice.tool_calls:
-                    norm_tools.append(NormalizedToolCall(tc.id, tc.function.name, tc.function.arguments))
+                    raw_tc = {}
+                    if hasattr(tc, "model_dump"):
+                        raw_tc = tc.model_dump(exclude_none=True)
+                    else:
+                        raw_tc = {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+
+                    # Preserve Gemini thought_signature and extra metadata
+                    if hasattr(tc, "model_extra") and tc.model_extra:
+                        raw_tc.update(tc.model_extra)
+                    if hasattr(tc.function, "model_extra") and tc.function.model_extra:
+                        raw_tc.setdefault("function", {}).update(tc.function.model_extra)
+
+                    norm_tools.append(NormalizedToolCall(tc.id, tc.function.name, tc.function.arguments, raw_dict=raw_tc))
             return NormalizedResponse(NormalizedMessage(content=choice.content, tool_calls=norm_tools))
 
         elif self.mode == "anthropic":
@@ -483,7 +496,7 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     # Explicit provider specified
     if p != "auto":
         default_models = {
-            "groq": "llama-3.3-70b-versatile",
+            "groq": "llama-3.1-8b-instant",
             "openai": "gpt-4o-mini",
             "gemini": "gemini-2.0-flash",
             "claude": "claude-3-5-haiku-20241022",
@@ -494,7 +507,7 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
             "offline": "static-analysis-engine",
             "heuristic": "static-analysis-engine",
         }
-        model = model_opt or default_models.get(p, "llama-3.3-70b-versatile")
+        model = model_opt or default_models.get(p, "llama-3.1-8b-instant")
         return p, model
 
     # Auto-detection from model name if provided
@@ -766,7 +779,7 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
             assistant_entry["content"] = choice.content
         if choice.tool_calls:
             assistant_entry["tool_calls"] = [
-                {
+                getattr(tc, "raw_dict", None) or {
                     "id": tc.id,
                     "type": "function",
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments},
