@@ -861,11 +861,13 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
 # ==============================================================================
 # Autonomous Heuristic & Static Architecture Engine (Zero-API / Zero-Cost)
 # ==============================================================================
-def run_offline_analysis(repo: Path) -> Dict[str, Any]:
+def run_offline_analysis(repo: Path, audit_res: Optional[Any] = None) -> Dict[str, Any]:
     """
     Evaluates repository architecture and serverless suitability locally using
     deterministic static analysis and heuristic inference.
     Executes with ZERO external API calls, zero rate-limit constraints, and zero token costs.
+    If audit_res from DarogaOrchestrator is provided, its structured verdict, target runtime,
+    and blockers are used as the single source of truth.
     """
     log_step("AGENT", "Engaging Autonomous Offline Architecture Engine (Zero-API Mode)...", Colors.CYAN)
 
@@ -884,13 +886,29 @@ def run_offline_analysis(repo: Path) -> Dict[str, Any]:
 
     log_success(f"Offline Engine indexed {len(server_files)} relevant project files.")
 
-    # 1. Inspect dependency manifests and technology stacks
-    has_go = any(p.name in ("go.mod", "main.go") or p.suffix == ".go" for p in server_files)
-    has_python = any(p.name in ("requirements.txt", "Pipfile", "pyproject.toml") or p.suffix == ".py" for p in server_files)
-    has_node = any(p.name == "package.json" for p in server_files)
-    dockerfiles = [p for p in server_files if "dockerfile" in p.name.lower()]
+    # 1. Determine target service runtime and scope
+    backend_rel = "backend" if (repo / "backend").is_dir() else "."
+    backend_dir = repo / backend_rel
+    code_uri_val = f"{backend_rel}/" if backend_rel != "." else "."
+
+    if audit_res is not None and getattr(audit_res, "target_runtime", None):
+        target_runtime_clean = audit_res.target_runtime.lower()
+        has_go = target_runtime_clean == "go"
+        has_python = target_runtime_clean == "python"
+        has_node = target_runtime_clean in ("node", "javascript", "typescript")
+        if getattr(audit_res, "repo", None) and getattr(audit_res.repo, "target_service_directory", None):
+            backend_rel = audit_res.repo.target_service_directory
+            backend_dir = repo / backend_rel if backend_rel != "." else repo
+            code_uri_val = f"{backend_rel}/" if backend_rel != "." else "."
+    else:
+        # Fallback inspection of entrypoint manifests in backend_dir first, then repo
+        target_check_dir = backend_dir if backend_dir.is_dir() else repo
+        has_go = (target_check_dir / "go.mod").is_file() or any(p.suffix == ".go" for p in target_check_dir.glob("*"))
+        has_python = not has_go and ((target_check_dir / "requirements.txt").is_file() or (target_check_dir / "pyproject.toml").is_file() or any(p.suffix == ".py" for p in target_check_dir.glob("*")))
+        has_node = not has_go and not has_python and ((target_check_dir / "package.json").is_file() or any(p.suffix in (".js", ".ts") for p in target_check_dir.glob("*")))
 
     # 2. Inspect for architectural blockers (Docker sandbox, WebSockets, SQLite, etc.)
+    dockerfiles = [p for p in server_files if "dockerfile" in p.name.lower()]
     has_docker_execution = False
     docker_reasons: List[str] = []
     has_websockets = False
@@ -926,20 +944,29 @@ def run_offline_analysis(repo: Path) -> Dict[str, Any]:
             if any(k in txt for k in ("sqlite3", "sqlite.Open", "import sqlite3")):
                 has_sqlite = True
 
-    # 3. Formulate Architecture Decision & Artifacts
-    timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 3. Formulate Architecture Decision & Verdict
+    # Single source of truth: honor audit_res verdict if available
+    if audit_res is not None and getattr(audit_res, "verdict", None):
+        verdict = audit_res.verdict
+        blockers = getattr(audit_res, "blockers", [])
+        conditions = getattr(audit_res, "conditions", [])
+    else:
+        if has_docker_execution or has_websockets:
+            verdict = "MIGRATE (WITH DECOUPLING)"
+            blockers = docker_reasons
+            conditions = ["Decouple long-running container tasks to ECS Fargate"]
+        else:
+            verdict = "MIGRATE"
+            blockers = []
+            conditions = []
 
-    # Resolve target backend directory (if monorepo with frontend/backend, focus on backend)
-    backend_rel = "backend" if (repo / "backend").is_dir() else "."
-    backend_dir = repo / backend_rel
-    code_uri_val = f"{backend_rel}/" if backend_rel != "." else "."
-
-    verdict = "migrate"
     summary = (
         f"Migrated EC2 continuous backend service into AWS Lambda serverless architecture. "
         f"Targeted backend scope '{backend_rel}'. Generated serverless runtime adapter, "
         f"AWS SAM infrastructure template, build scripts, and AWS Management Console guide."
     )
+    if conditions:
+        summary += f" Conditions: {'; '.join(conditions)}."
 
     created_artifacts: List[str] = []
 
@@ -1058,7 +1085,7 @@ exports.handler = serverless({ app });
         created_artifacts.append(lambda_js.relative_to(repo).as_posix())
         log_success(f"Generated Node.js serverless adapter: '{lambda_js.name}'")
 
-    # Generate AWS SAM Infrastructure Template (template.yaml)
+    # 4. Generate AWS SAM Infrastructure Template (template.yaml)
     sam_template = repo / "template.yaml"
     runtime_str = "provided.al2023" if has_go else ("python3.12" if has_python else "nodejs20.x")
     handler_str = "bootstrap" if has_go else ("lambda_function.lambda_handler" if has_python else "lambda.handler")
@@ -1108,49 +1135,6 @@ Outputs:
     sam_template.write_text(sam_content, encoding="utf-8")
     created_artifacts.append("template.yaml")
     log_success("Generated AWS SAM infrastructure definition: 'template.yaml'")
-
-    # Generate MIGRATION_REPORT.md
-    report_path = repo / "MIGRATION_REPORT.md"
-    report_content = f"""# AWS Lambda Migration Assessment Report: {repo.name}
-
-**Generated by:** Autonomous Migration Agent CLI
-**Analysis Date:** {timestamp_str}
-**Verdict:** **MIGRATE** (`migrate`)
-**Target Scope:** `{backend_rel}` backend service
-
----
-
-## Executive Summary
-Target application `{repo.name}` has been migrated from a legacy continuous EC2 virtual machine deployment into an event-driven **AWS Lambda Serverless** architecture.
-
-On EC2, the service ran as an uninterrupted background daemon listening continuously on a local TCP socket. In AWS Lambda, continuous socket listeners are replaced by an event-driven AWS API Gateway HTTP trigger that invokes your serverless handler on demand.
-
----
-
-## Migration Deliverables (Generated Artifacts)
-{chr(10).join(f"- `{f}`" for f in created_artifacts)}
-
----
-
-## Architectural Delta: EC2 vs. AWS Lambda
-
-| Attribute | Legacy EC2 Virtual Machine | Migrated AWS Lambda Serverless |
-| :--- | :--- | :--- |
-| **Execution Model** | 24/7 continuous process listening on port | Event-driven micro-invocations on HTTP request |
-| **Cost Model** | Billed 24/7/365 regardless of traffic | **Pay-per-millisecond** (1,000,000 requests/mo FREE) |
-| **Scaling** | Manual EC2 Auto Scaling groups (minutes) | Sub-second automatic concurrency scaling |
-| **OS Maintenance** | Patching kernel, AMI updates, SSH keys | 100% managed by AWS (zero server maintenance) |
-
----
-
-## Decoupled Architecture Notes
-- If the application executes asynchronous background jobs or long-running compiler workers, decouple these workers using **AWS SQS** or run the batch runners on **AWS ECS Fargate**, while the public REST API routes execute cost-effectively on **AWS Lambda**.
-- Deploy the frontend (`Next.js`/`React`) to **AWS Amplify**, **Vercel**, or **Amazon S3 + CloudFront**, pointing `NEXT_PUBLIC_API_URL` to your API Gateway endpoint.
-
-See `USER.md` for AWS Management Console setup instructions.
-"""
-    report_path.write_text(report_content, encoding="utf-8")
-    log_success(f"Generated architectural evaluation: '{report_path.name}'")
 
     # Generate USER.md
     user_path = repo / "USER.md"
@@ -1268,14 +1252,14 @@ Examples:
         "--push",
         dest="push",
         action="store_true",
-        default=True,
-        help="Push the migration feature branch to the remote git repository (default: enabled if remote exists)",
+        default=False,
+        help="Push the migration feature branch to the remote git repository (default: disabled / opt-in)",
     )
     parser.add_argument(
         "--no-push",
         dest="push",
         action="store_false",
-        help="Do NOT push the migration branch; keep changes strictly local",
+        help="Do NOT push the migration branch; keep changes strictly local (default)",
     )
     parser.add_argument(
         "--remote",
@@ -1382,6 +1366,7 @@ Examples:
     run_git(repo_path, "checkout", "-b", migration_branch)
 
     migration_verdict = None
+    audit_res = None
     try:
         # Phase 1: DAROGA Infrastructure & Architecture Audit
         if DarogaOrchestrator is not None:
@@ -1393,7 +1378,7 @@ Examples:
                 cdp_url=args.cdp_url,
                 output_report_path=out_p,
             )
-            orchestrator.run_audit()
+            audit_res = orchestrator.run_audit()
         else:
             log_warn("DarogaOrchestrator not loaded. Proceeding with heuristic code generation.")
 
@@ -1420,16 +1405,16 @@ Examples:
             except Exception as exc:
                 log_warn(f"Online AI session encountered an error or rate-limit: {exc}")
                 log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
-                migration_verdict = run_offline_analysis(repo_path)
+                migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
         else:
-            migration_verdict = run_offline_analysis(repo_path)
+            migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
 
     except KeyboardInterrupt:
         log_warn("\nSession aborted by user.")
     except Exception as exc:
         log_warn(f"Migration session encountered an error: {exc}")
         log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
-        migration_verdict = run_offline_analysis(repo_path)
+        migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
     finally:
         # Clean ephemeral cache artifacts
         for pycache in repo_path.rglob("__pycache__"):
@@ -1439,16 +1424,16 @@ Examples:
         if has_changes:
             log_step("GIT", "Staging and committing generated migration artifacts...")
             run_git(repo_path, "add", "-A")
+            commit_verdict_str = audit_res.verdict if audit_res else (migration_verdict.get('verdict', 'migrate') if migration_verdict else 'MIGRATE')
             commit_msg = (
                 f"feat(aws-lambda): automated migration by DAROGA Autonomous Agent\n\n"
-                f"Verdict: {migration_verdict.get('verdict', 'migrate').upper() if migration_verdict else 'MIGRATE'}\n"
+                f"Verdict: {commit_verdict_str.upper()}\n"
                 f"Target Branch: {migration_branch}\n\n"
                 f"Generated Deliverables:\n"
                 f"- EC2_TO_LAMBDA_MIGRATION_REPORT.md (23-section architecture audit)\n"
                 f"- Serverless runtime adapter & Linux ARM64 build script\n"
                 f"- template.yaml (AWS SAM HTTP API Gateway v2 specification)\n"
-                f"- USER.md (Step-by-step AWS Management Console deployment guide)\n"
-                f"- MIGRATION_REPORT.md (Executive serverless migration summary)"
+                f"- USER.md (Step-by-step AWS Management Console deployment guide)"
             )
             run_git(repo_path, "commit", "-m", commit_msg)
             log_success(f"Changes committed to isolated branch: '{migration_branch}'")
@@ -1476,13 +1461,20 @@ Examples:
                         f"Changes remain safely committed locally on '{migration_branch}'."
                     )
             else:
-                log_step("GIT", f"Push disabled (--no-push). Changes committed locally to '{migration_branch}'.")
+                log_step("GIT", f"Remote push skipped (default opt-in). Changes committed locally to '{migration_branch}'.")
+                print(f"ℹ Push command: git push -u {args.remote} {migration_branch}")
         else:
             log_step("GIT", "No code changes generated during session.")
 
         # Always restore original working branch
         log_step("GIT", f"Restoring active workspace to original branch: '{original_branch}'")
         run_git(repo_path, "checkout", original_branch)
+
+        # Verify original branch is completely clean / untouched
+        original_clean = is_git_clean(repo_path)
+        if not original_clean:
+            status_p = run_git(repo_path, "status", "--porcelain", check=False).stdout.strip()
+            log_warn(f"Original branch '{original_branch}' has untracked or modified files:\n{status_p}")
 
         # Cleanup empty branch if no commits were created
         diff_check = run_git(repo_path, "rev-list", f"{original_branch}..{migration_branch}", check=False)
@@ -1492,20 +1484,33 @@ Examples:
     print("\n" + "=" * 70)
     print(f"{Colors.BOLD}DAROGA MIGRATION & AUDIT SUMMARY{Colors.RESET}")
     print("=" * 70)
-    if migration_verdict:
-        verdict_str = migration_verdict.get("verdict", "MIGRATE").upper()
-        verdict_color = Colors.GREEN if "MIGRATE" in verdict_str else Colors.YELLOW
-        if supports_color():
-            print(f"VERDICT: {verdict_color}{Colors.BOLD}{verdict_str}{Colors.RESET}")
-        else:
-            print(f"VERDICT: {verdict_str}")
-        print(f"SUMMARY: {migration_verdict.get('summary', 'Migration completed successfully.')}\n")
+    final_verdict_str = audit_res.verdict if audit_res else (migration_verdict.get("verdict", "MIGRATE") if migration_verdict else "MIGRATE")
+    verdict_color = Colors.GREEN if "MIGRATE" in final_verdict_str and "NOT" not in final_verdict_str else Colors.YELLOW
+    if supports_color():
+        print(f"VERDICT: {verdict_color}{Colors.BOLD}{final_verdict_str.upper()}{Colors.RESET}")
+    else:
+        print(f"VERDICT: {final_verdict_str.upper()}")
 
-    print(f"• Working Branch:   {original_branch} (100% UNTOUCHED)")
+    if audit_res and audit_res.conditions:
+        print(f"CONDITIONS: {'; '.join(audit_res.conditions)}")
+    if audit_res and audit_res.blockers:
+        print(f"BLOCKERS:   {'; '.join(audit_res.blockers)}")
+
+    summary_text = migration_verdict.get('summary', 'Migration completed successfully.') if migration_verdict else 'Audit completed.'
+    print(f"SUMMARY: {summary_text}\n")
+
+    if original_clean:
+        print(f"• Working Branch:   {original_branch} (100% UNTOUCHED)")
+    else:
+        print(f"• Working Branch:   {original_branch} (WARNING: dirty files present)")
+
     if has_changes:
-        print(f"• Migration Branch: {migration_branch} (COMMITTED & PUSHED)")
+        branch_action = "COMMITTED & PUSHED" if args.push else "COMMITTED LOCALLY"
+        print(f"• Migration Branch: {migration_branch} ({branch_action})")
         print(f"• Review Diff:      git diff {original_branch}..{migration_branch} --stat")
         print(f"• Checkout Branch:  git checkout {migration_branch}")
+        if not args.push:
+            print(f"• Push to Remote:   git push -u {args.remote} {migration_branch}")
         print(f"\n{Colors.BOLD}📖 NEXT STEPS FOR AWS DASHBOARD / CONSOLE:{Colors.RESET}")
         print(f"   1. Switch to migration branch:  {Colors.CYAN}git checkout {migration_branch}{Colors.RESET}")
         print(f"   2. Open '{Colors.CYAN}USER.md{Colors.RESET}' in the repo root for step-by-step AWS Dashboard instructions:")

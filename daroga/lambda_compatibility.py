@@ -47,10 +47,20 @@ class CompatibilityEvaluationReport:
     overall_score: float  # 0 to 100%
     findings: List[CompatibilityRuleFinding] = field(default_factory=list)
     blockers: List[str] = field(default_factory=list)
+    conditions: List[str] = field(default_factory=list)
     required_code_changes: List[str] = field(default_factory=list)
     recommended_runtime: str = "provided.al2023"
     recommended_memory_mb: int = 512
     recommended_timeout_sec: int = 30
+
+    def to_verdict_dict(self) -> Dict[str, Any]:
+        return {
+            "verdict": self.overall_verdict,
+            "score": self.overall_score,
+            "blockers": list(self.blockers),
+            "conditions": list(self.conditions),
+            "recommended_runtime": self.recommended_runtime,
+        }
 
 
 class LambdaCompatibilityEngine:
@@ -61,17 +71,17 @@ class LambdaCompatibilityEngine:
     def evaluate(self, repo: RepoInspectionResult, aws: AWSInfrastructureReport) -> CompatibilityEvaluationReport:
         report = CompatibilityEvaluationReport(overall_verdict="MIGRATE", overall_score=85.0)
 
-        # 1. Runtime Evaluation Rule
+        # 1. Runtime Evaluation Rule (strictly based on target service language)
         lang = repo.primary_language.lower()
         if lang == "go":
             report.recommended_runtime = "provided.al2023"
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-RNT-01",
                 category="Runtime Compatibility",
-                title="Golang Custom Runtime on Amazon Linux 2023",
+                title="Golang Custom Runtime on Amazon Linux 2023 (provided.al2023)",
                 status=CompatibilityStatus.COMPATIBLE_WITH_CODE_MODS,
                 severity=Severity.LOW,
-                evidence=f"Application written in Go with package manager: {repo.package_managers}",
+                evidence=f"Target backend service written in Go (Runtime: provided.al2023, Binary: bootstrap arm64)",
                 recommended_action="Compile binary for Linux ARM64 (bootstrap) and package using custom runtime 'provided.al2023'.",
                 confidence_score=0.98,
                 requires_human_review=False,
@@ -83,10 +93,10 @@ class LambdaCompatibilityEngine:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-RNT-02",
                 category="Runtime Compatibility",
-                title="Python Native Managed Runtime",
+                title="Python Native Managed Runtime (python3.12)",
                 status=CompatibilityStatus.COMPATIBLE_WITH_CODE_MODS,
                 severity=Severity.LOW,
-                evidence=f"Application written in Python with dependencies: {repo.package_managers}",
+                evidence=f"Target service written in Python with dependencies: {repo.package_managers}",
                 recommended_action="Deploy on managed runtime 'python3.12' using apig-wsgi or Mangum adapter.",
                 confidence_score=0.99,
                 requires_human_review=False,
@@ -98,10 +108,10 @@ class LambdaCompatibilityEngine:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-RNT-03",
                 category="Runtime Compatibility",
-                title="Node.js Managed Runtime",
+                title="Node.js Managed Runtime (nodejs20.x)",
                 status=CompatibilityStatus.COMPATIBLE_WITH_CODE_MODS,
                 severity=Severity.LOW,
-                evidence=f"Application written in JavaScript/TypeScript with {repo.package_managers}",
+                evidence=f"Target service written in JavaScript/TypeScript with {repo.package_managers}",
                 recommended_action="Deploy on managed runtime 'nodejs20.x' using @vendia/serverless-express.",
                 confidence_score=0.98,
                 requires_human_review=False,
@@ -121,35 +131,38 @@ class LambdaCompatibilityEngine:
             requires_human_review=False,
         ))
 
-        # 3. Docker Sandbox / Container Runtime Rule
+        # 3. Docker Sandbox / Container Runtime Rule (Docker-in-Lambda is Unsupported)
         if repo.has_docker_execution:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-CNT-01",
                 category="Container Runtime",
-                title="Dynamic Docker Container Execution Detected",
-                status=CompatibilityStatus.COMPATIBLE_WITH_ARCH_MODS,
+                title="Docker-in-Lambda is Unsupported (Dynamic Container Execution Detected)",
+                status=CompatibilityStatus.NOT_DIRECTLY_COMPATIBLE,
                 severity=Severity.HIGH,
                 evidence="; ".join(repo.docker_exec_evidence[:3]),
-                recommended_action="AWS Lambda runs in an isolated read-only Firecracker microVM and cannot host a Docker daemon. Decouple dynamic compiler/runner workloads to an asynchronous AWS ECS Fargate task or EventBridge worker, while retaining the HTTP API on Lambda.",
-                confidence_score=0.95,
+                recommended_action="AWS Lambda runs inside lightweight Firecracker microVMs with a read-only root filesystem and cannot run a Docker daemon or execute nested containers. Recommend AWS Lambda for the public API layer plus an asynchronous AWS ECS Fargate task (or AWS Batch) triggered via Amazon SQS or EventBridge for dynamic container execution.",
+                confidence_score=0.98,
                 requires_human_review=True,
             ))
-            report.blockers.append("Nested Docker container execution cannot run inside AWS Lambda microVMs without decoupling.")
-            report.required_code_changes.append("Decouple `docker run` compiler execution into an asynchronous ECS Fargate or Lambda container task.")
+            report.blockers.append("Dynamic Docker execution (docker run, docker.sock) is unsupported inside AWS Lambda.")
+            report.conditions.append("Decouple dynamic container execution to AWS ECS Fargate task worker")
+            report.required_code_changes.append("Decouple `docker run` container execution into an asynchronous ECS Fargate or Lambda container task.")
 
-        # 4. WebSockets Rule
+        # 4. WebSockets Rule (Persistent TCP / WebSocket Listener Requires Redesign)
         if repo.has_websockets:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-WBS-01",
                 category="Networking & Protocols",
-                title="Persistent Bidirectional WebSocket Connections",
-                status=CompatibilityStatus.COMPATIBLE_WITH_ARCH_MODS,
+                title="Persistent TCP / WebSocket Listener Requires Redesign",
+                status=CompatibilityStatus.NOT_DIRECTLY_COMPATIBLE,
                 severity=Severity.HIGH,
                 evidence="; ".join(repo.websocket_evidence[:2]),
-                recommended_action="Migrate persistent WebSockets to Amazon API Gateway WebSocket API with connectionId state stored in Amazon DynamoDB.",
-                confidence_score=0.92,
+                recommended_action="Persistent bidirectional TCP/WebSocket connections cannot run directly on AWS Lambda without architectural redesign. Replace with Amazon API Gateway WebSocket API with connectionId state persisted in Amazon DynamoDB, or host on a dedicated real-time service.",
+                confidence_score=0.95,
                 requires_human_review=True,
             ))
+            report.blockers.append("Persistent TCP/WebSocket connections require redesign to Amazon API Gateway WebSocket API or dedicated service.")
+            report.conditions.append("Migrate WebSocket listeners to API Gateway WebSocket API + DynamoDB")
             report.required_code_changes.append("Refactor WebSocket handlers to consume API Gateway `$connect`, `$disconnect`, and `$default` events.")
 
         # 5. Local Storage & SQLite Rule
@@ -165,9 +178,61 @@ class LambdaCompatibilityEngine:
                 confidence_score=0.94,
                 requires_human_review=True,
             ))
+            report.blockers.append("Local disk storage or SQLite resets across Lambda invocations.")
+            report.conditions.append("Migrate persistent storage to Amazon S3 or DynamoDB")
             report.required_code_changes.append("Migrate local file storage/SQLite to Amazon S3 or Amazon DynamoDB.")
 
-        # 6. Scheduled Tasks Rule
+        # 6. Execution Limit Rules: Timeout, Payload, Storage
+        if repo.has_docker_execution:
+            report.findings.append(CompatibilityRuleFinding(
+                rule_id="RULE-LIM-01",
+                category="Execution Limits",
+                title="15-Minute Timeout Limit (Long-Running Tasks Detected)",
+                status=CompatibilityStatus.NOT_DIRECTLY_COMPATIBLE,
+                severity=Severity.HIGH,
+                evidence="In-app compiler/sandbox tasks risk exceeding the 15-minute Lambda ceiling.",
+                recommended_action="AWS Lambda enforces a hard 15-minute (900s) maximum execution duration. Long-running compilation or batch tasks must be decoupled to ECS Fargate.",
+                confidence_score=0.95,
+                requires_human_review=True,
+            ))
+        else:
+            report.findings.append(CompatibilityRuleFinding(
+                rule_id="RULE-LIM-01",
+                category="Execution Limits",
+                title="15-Minute Maximum Execution Timeout",
+                status=CompatibilityStatus.COMPATIBLE_WITHOUT_CHANGES,
+                severity=Severity.INFO,
+                evidence="Standard synchronous HTTP request-response pattern identified.",
+                recommended_action="AWS Lambda enforces a 15-minute maximum timeout. Ensure API Gateway timeouts (max 30s) are respected.",
+                confidence_score=0.95,
+                requires_human_review=False,
+            ))
+
+        report.findings.append(CompatibilityRuleFinding(
+            rule_id="RULE-LIM-02",
+            category="Execution Limits",
+            title="6 MB Synchronous Payload Limit",
+            status=CompatibilityStatus.COMPATIBLE_WITHOUT_CHANGES,
+            severity=Severity.INFO,
+            evidence="Standard REST/JSON payload APIs detected.",
+            recommended_action="AWS Lambda enforces a 6 MB maximum payload limit for synchronous API Gateway requests and responses. For large file uploads or outputs, generate Amazon S3 presigned URLs.",
+            confidence_score=0.95,
+            requires_human_review=False,
+        ))
+
+        report.findings.append(CompatibilityRuleFinding(
+            rule_id="RULE-LIM-03",
+            category="Execution Limits",
+            title="Ephemeral Disk Storage (/tmp 512MB-10GB)",
+            status=CompatibilityStatus.COMPATIBLE_WITHOUT_CHANGES,
+            severity=Severity.INFO,
+            evidence="No heavy persistent disk writes detected outside standard temporary files.",
+            recommended_action="Ephemeral storage (/tmp) is available from 512 MB up to 10 GB. Data resets between warm container life cycles.",
+            confidence_score=0.95,
+            requires_human_review=False,
+        ))
+
+        # 7. Scheduled Tasks Rule
         if repo.has_scheduled_jobs:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-JOB-01",
@@ -182,7 +247,7 @@ class LambdaCompatibilityEngine:
             ))
             report.required_code_changes.append("Extract cron routines into standalone Lambda functions triggered by EventBridge Scheduler.")
 
-        # 7. Database Connection Pooling Rule
+        # 8. Database Connection Pooling Rule
         if repo.database_types:
             report.findings.append(CompatibilityRuleFinding(
                 rule_id="RULE-DB-01",
@@ -197,12 +262,22 @@ class LambdaCompatibilityEngine:
             ))
             report.required_code_changes.append("Initialize database connections in global execution context to benefit from Lambda container reuse.")
 
-        # Determine overall score
-        deductions = sum(15 for f in report.findings if f.severity in (Severity.HIGH, Severity.CRITICAL))
-        report.overall_score = max(50.0, 100.0 - deductions)
-        if report.blockers:
+        # 9. Blocker-Aware Scoring and Verdict Determination
+        high_findings = [f for f in report.findings if f.severity == Severity.HIGH]
+        critical_findings = [f for f in report.findings if f.severity == Severity.CRITICAL]
+
+        if critical_findings:
+            report.overall_score = min(40.0, 100.0 - (len(critical_findings) * 30))
+            report.overall_verdict = "NOT RECOMMENDED"
+        elif high_findings:
+            # HIGH-severity findings cap the score at 60 and force the verdict to "MIGRATE (WITH DECOUPLING)"
+            report.overall_score = min(60.0, max(45.0, 60.0 - ((len(high_findings) - 1) * 5)))
             report.overall_verdict = "MIGRATE (WITH DECOUPLING)"
+        elif any(f.severity == Severity.MEDIUM for f in report.findings):
+            report.overall_score = 80.0
+            report.overall_verdict = "MIGRATE (WITH CODE MODIFICATIONS)"
         else:
+            report.overall_score = 95.0
             report.overall_verdict = "MIGRATE (FULLY COMPATIBLE)"
 
         return report

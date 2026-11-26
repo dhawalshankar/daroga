@@ -148,6 +148,11 @@ class EC2Inspector:
             ident.error = ident.error or "AWS credentials not configured in environment or ~/.aws/credentials"
         return ident
 
+    CANDIDATE_REGIONS = [
+        "ap-southeast-2", "us-east-1", "us-east-2", "us-west-2",
+        "ap-south-1", "eu-west-1", "eu-central-1", "ap-southeast-1"
+    ]
+
     def inspect_all(self) -> AWSInfrastructureReport:
         report = AWSInfrastructureReport()
         report.identity = self.inspect_caller_identity()
@@ -156,8 +161,22 @@ class EC2Inspector:
             report.errors_or_notes.append(f"AWS identity unverified: {report.identity.error}. Skipping live API calls.")
             return report
 
-        # 1. EC2 Instances
+        # 1. EC2 Instances (with multi-region auto-discovery if 0 instances found in current region)
         self._inspect_ec2_instances(report)
+
+        if not report.instances and not self.target_instance_id:
+            # Multi-region auto-scan to find instances running in other regions
+            other_regions = [r for r in self.CANDIDATE_REGIONS if r != self.region_name]
+            for reg in other_regions:
+                temp_report = AWSInfrastructureReport()
+                self._query_region_instances(reg, temp_report)
+                if temp_report.instances:
+                    logger.info(f"Auto-discovered {len(temp_report.instances)} instance(s) in region '{reg}'. Switching active region to '{reg}'.")
+                    self.region_name = reg
+                    self._init_clients()
+                    report.identity.region = reg
+                    report.instances = temp_report.instances
+                    break
 
         # 2. VPCs & Subnets
         self._inspect_networking(report)
@@ -170,6 +189,62 @@ class EC2Inspector:
 
         report.inspection_successful = len(report.instances) > 0 or len(report.security_groups) > 0
         return report
+
+    def _query_region_instances(self, region: str, report: AWSInfrastructureReport):
+        if self.boto_available:
+            try:
+                client = boto3.client("ec2", region_name=region)
+                resp = client.describe_instances()
+                for res in resp.get("Reservations", []):
+                    for inst in res.get("Instances", []):
+                        if inst.get("State", {}).get("Name") == "running" or not report.instances:
+                            report.instances.append(EC2InstanceDetail(
+                                instance_id=inst.get("InstanceId", ""),
+                                instance_type=inst.get("InstanceType", ""),
+                                state=inst.get("State", {}).get("Name", "unknown"),
+                                ami_id=inst.get("ImageId", ""),
+                                platform_or_os=inst.get("PlatformDetails", "Linux/UNIX"),
+                                launch_time=str(inst.get("LaunchTime", "")),
+                                vpc_id=inst.get("VpcId"),
+                                subnet_id=inst.get("SubnetId"),
+                                private_ip=inst.get("PrivateIpAddress"),
+                                public_ip=inst.get("PublicIpAddress"),
+                                security_group_ids=[sg.get("GroupId") for sg in inst.get("SecurityGroups", [])],
+                                ebs_volume_ids=[bdm.get("Ebs", {}).get("VolumeId") for bdm in inst.get("BlockDeviceMappings", []) if bdm.get("Ebs")],
+                                iam_instance_profile=inst.get("IamInstanceProfile", {}).get("Arn"),
+                                tags={t.get("Key"): t.get("Value") for t in inst.get("Tags", [])},
+                            ))
+                if report.instances:
+                    return
+            except Exception:
+                pass
+
+        if shutil.which("aws"):
+            try:
+                cmd = ["aws", "ec2", "describe-instances", "--region", region, "--output", "json"]
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    for res in data.get("Reservations", []):
+                        for inst in res.get("Instances", []):
+                            report.instances.append(EC2InstanceDetail(
+                                instance_id=inst.get("InstanceId", ""),
+                                instance_type=inst.get("InstanceType", ""),
+                                state=inst.get("State", {}).get("Name", "unknown"),
+                                ami_id=inst.get("ImageId", ""),
+                                platform_or_os=inst.get("PlatformDetails", "Linux/UNIX"),
+                                launch_time=str(inst.get("LaunchTime", "")),
+                                vpc_id=inst.get("VpcId"),
+                                subnet_id=inst.get("SubnetId"),
+                                private_ip=inst.get("PrivateIpAddress"),
+                                public_ip=inst.get("PublicIpAddress"),
+                                security_group_ids=[sg.get("GroupId") for sg in inst.get("SecurityGroups", [])],
+                                ebs_volume_ids=[bdm.get("Ebs", {}).get("VolumeId") for bdm in inst.get("BlockDeviceMappings", []) if bdm.get("Ebs")],
+                                iam_instance_profile=inst.get("IamInstanceProfile", {}).get("Arn"),
+                                tags={t.get("Key"): t.get("Value") for t in inst.get("Tags", [])},
+                            ))
+            except Exception:
+                pass
 
     def _inspect_ec2_instances(self, report: AWSInfrastructureReport):
         if self.boto_available:

@@ -19,8 +19,12 @@ class RepoInspectionResult:
     repo_name: str
     repo_path: str
     primary_language: str
+    target_service_language: str = "unknown"
+    target_service_directory: Optional[str] = None
+    repo_wide_languages: List[str] = field(default_factory=list)
     languages: List[str] = field(default_factory=list)
     frameworks: List[str] = field(default_factory=list)
+    repo_wide_frameworks: List[str] = field(default_factory=list)
     entrypoints: List[str] = field(default_factory=list)
     exposed_ports: List[int] = field(default_factory=list)
     package_managers: List[str] = field(default_factory=list)
@@ -144,20 +148,82 @@ class RepositoryScanner:
                 if "cargo" not in result.package_managers and p.name == "Cargo.toml":
                     result.package_managers.append("Cargo.toml")
 
-        # Determine Primary Language
+        # Determine Primary Language (Repo-wide)
         sorted_langs = sorted([k for k, v in lang_scores.items() if v > 0], key=lambda k: lang_scores[k], reverse=True)
-        result.languages = sorted_langs
-        if sorted_langs:
-            result.primary_language = sorted_langs[0]
+        result.repo_wide_languages = sorted_langs
 
         # 4. Deep Inspection of Manifests & Dependencies
         self._inspect_manifests(result)
 
-        # 5. Locate Entrypoints and Exposed Ports
+        # 5. Locate Entrypoints and Exposed Ports First
         self._locate_entrypoints_and_ports(candidate_files, result)
 
         # 6. Deep AST & Heuristic Pattern Inspection of Source Code
         self._inspect_code_behavior(candidate_files, result)
+
+        # 7. Determine Target Service Directory and Target Runtime from Entrypoint Directory
+        target_dir = None
+        if result.backend_directory and (self.repo_path / result.backend_directory).is_dir():
+            target_dir = self.repo_path / result.backend_directory
+            result.target_service_directory = result.backend_directory
+        elif result.entrypoints:
+            # Pick first entrypoint's directory
+            ep_path = self.repo_path / result.entrypoints[0]
+            if ep_path.parent != self.repo_path:
+                target_dir = ep_path.parent
+                result.target_service_directory = ep_path.parent.relative_to(self.repo_path).as_posix()
+            else:
+                target_dir = self.repo_path
+                result.target_service_directory = "."
+        else:
+            target_dir = self.repo_path
+            result.target_service_directory = "."
+
+        # Resolve language from target service's directory manifests
+        target_lang = "unknown"
+        if (target_dir / "go.mod").exists() or list(target_dir.glob("*.go")):
+            target_lang = "go"
+        elif (target_dir / "requirements.txt").exists() or (target_dir / "pyproject.toml").exists() or (target_dir / "Pipfile").exists() or list(target_dir.glob("*.py")):
+            target_lang = "python"
+        elif (target_dir / "package.json").exists() or list(target_dir.glob("*.js")) or list(target_dir.glob("*.ts")):
+            target_lang = "javascript"
+        elif (target_dir / "pom.xml").exists() or (target_dir / "build.gradle").exists() or list(target_dir.glob("*.java")):
+            target_lang = "java"
+        elif (target_dir / "Cargo.toml").exists() or list(target_dir.glob("*.rs")):
+            target_lang = "rust"
+        else:
+            # Fallback to repo-level manifests if target directory didn't have one
+            if (self.repo_path / "go.mod").exists():
+                target_lang = "go"
+            elif (self.repo_path / "requirements.txt").exists() or (self.repo_path / "pyproject.toml").exists():
+                target_lang = "python"
+            elif (self.repo_path / "package.json").exists():
+                target_lang = "javascript"
+            elif sorted_langs:
+                target_lang = sorted_langs[0]
+
+        result.target_service_language = target_lang
+        result.primary_language = target_lang
+        result.languages = [target_lang] + [l for l in sorted_langs if l != target_lang]
+
+        # Separate target service frameworks from repo-wide / frontend frameworks
+        service_frameworks = []
+        repo_wide_frameworks = list(result.frameworks)
+        if target_lang == "go":
+            service_frameworks = [f for f in result.frameworks if "(Go)" in f]
+            if not service_frameworks:
+                service_frameworks = ["Standard net/http (Go)"]
+        elif target_lang == "python":
+            service_frameworks = [f for f in result.frameworks if "(Python)" in f]
+            if not service_frameworks:
+                service_frameworks = ["Standard WSGI/ASGI (Python)"]
+        elif target_lang in ("javascript", "typescript"):
+            service_frameworks = [f for f in result.frameworks if "Express" in f or "Fastify" in f] or result.frameworks
+        else:
+            service_frameworks = result.frameworks
+
+        result.frameworks = service_frameworks
+        result.repo_wide_frameworks = repo_wide_frameworks
 
         return result
 

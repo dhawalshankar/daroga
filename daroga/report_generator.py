@@ -54,6 +54,13 @@ class ReportGenerator:
             components_rows.append(f"| **{c.service_name}** | {c.purpose} | {c.replaces_ec2_responsibility} | {c.cost_impact} |")
         components_table = "\n".join(components_rows)
 
+        if cost.has_live_instance:
+            ec2_cost_str = f"**${cost.ec2_monthly_estimated:.2f}/month** ({cost.ec2_label})"
+            savings_str = f"**{cost.monthly_savings_percent:.1f}%** (${cost.monthly_savings_low:.2f}/month)"
+        else:
+            ec2_cost_str = f"**{cost.ec2_label}:** {cost.ec2_range}"
+            savings_str = f"**{cost.savings_label}**"
+
         report = f"""# EC2 TO LAMBDA MIGRATION REPORT
 **Audited Application:** `{repo.repo_name}`  
 **Audit Tool:** DAROGA Autonomous Infrastructure Inspector & Migration Auditor  
@@ -66,19 +73,22 @@ class ReportGenerator:
 ## 1. Executive Summary
 This report presents an application-specific, architectural migration assessment for transitioning `{repo.repo_name}` from an Amazon EC2 virtual machine hosting model to **AWS Lambda Serverless Architecture**.
 
-* **Primary Technology Stack:** {repo.primary_language.capitalize()} ({', '.join(repo.frameworks) or 'Standard HTTP/REST'})
-* **Target Migration Scope:** {'`' + repo.backend_directory + '` backend service' if repo.backend_directory else 'Root application service'}
+* **Target Service Stack:** {repo.primary_language.capitalize()} ({', '.join(repo.frameworks) or 'Standard HTTP/REST'})
+* **Target Migration Scope:** {'`' + repo.target_service_directory + '` backend service' if repo.target_service_directory else 'Root application service'}
 * **Migration Suitability Verdict:** **{compat.overall_verdict}** (Compatibility Score: **{compat.overall_score:.0f}%**)
-* **Baseline Estimated Monthly EC2 Cost:** **${cost.ec2_monthly_estimated:.2f}/month**
+* **Baseline EC2 Cost:** {ec2_cost_str}
 * **Projected Serverless Lambda Cost (Low/Moderate Traffic):** **${cost.lambda_low_traffic_monthly:.2f} – ${cost.lambda_medium_traffic_monthly:.2f}/month**
-* **Potential Monthly Infrastructure Savings:** **{cost.monthly_savings_percent:.1f}%** (${cost.monthly_savings_low:.2f}/month)
+* **Potential Monthly Infrastructure Savings:** {savings_str}
+{('* **Blockers Detected:** ' + '; '.join(compat.blockers)) if compat.blockers else ''}
+{('* **Required Architectural Conditions:** ' + '; '.join(compat.conditions)) if compat.conditions else ''}
 
 > **Important Operational Guardrail:** This report is prepared by an autonomous auditor. In accordance with safety restrictions, **no production infrastructure was modified and no code was deployed**. The user performs all actual implementation steps manually using the copy-paste instructions in Section 16 & 17.
 
 ---
 
 ## 2. Existing Application Architecture
-* **Language & Runtime:** {repo.primary_language.capitalize()} ({', '.join(repo.languages)})
+* **Target Service Language & Runtime:** {repo.primary_language.capitalize()} (Recommended Lambda Runtime: `{compat.recommended_runtime}`)
+* **Repo-Wide Languages:** {', '.join(repo.repo_wide_languages) or ', '.join(repo.languages)}
 * **Web Framework:** {', '.join(repo.frameworks) or 'Native HTTP router'}
 * **Entry Point(s):** {', '.join(repo.entrypoints) or 'Not explicitly resolved'}
 * **Exposed Ports:** {', '.join(str(p) for p in repo.exposed_ports) or 'Dynamic / Environment PORT'}
