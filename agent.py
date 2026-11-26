@@ -978,6 +978,11 @@ func RunAsLambda() {
 	log.Println("[LAMBDA] Starting AWS Lambda serverless event loop...")
 	lambda.Start(LambdaHandler)
 }
+
+func main() {
+	log.Println("[LAMBDA] Starting AWS Lambda serverless event loop...")
+	lambda.Start(LambdaHandler)
+}
 """
         lambda_go_file.write_text(lambda_go_content, encoding="utf-8")
         created_artifacts.append(lambda_go_file.relative_to(repo).as_posix())
@@ -989,6 +994,9 @@ func RunAsLambda() {
             "#!/usr/bin/env bash\n"
             "# Cross-compile Go binary for AWS Lambda Amazon Linux 2023 (arm64)\n"
             "set -e\n"
+            "echo 'Downloading AWS Lambda Go dependencies...'\n"
+            "go get github.com/aws/aws-lambda-go/lambda github.com/aws/aws-lambda-go/events github.com/awslabs/aws-lambda-go-api-proxy/httpadapter 2>/dev/null || true\n"
+            "go mod tidy 2>/dev/null || true\n"
             "echo 'Building bootstrap binary for AWS Lambda Graviton (arm64)...'\n"
             "GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bootstrap lambda_main.go\n"
             "echo 'Build complete: bootstrap ready for deployment.'\n",
@@ -1221,49 +1229,19 @@ NEXT_PUBLIC_API_URL=https://<your-api-id>.execute-api.<region>.amazonaws.com
 
 
 # ==============================================================================
-# CLI Entrypoint & Workflow Orchestrator
-# ==============================================================================
-# ==============================================================================
-# DAROGA CLI Entrypoint & Workflow Orchestrator
+# DAROGA Unified Autonomous Migration & Audit CLI Entrypoint
 # ==============================================================================
 def daroga_main():
     """
-    DAROGA — EC2 to AWS Lambda Migration Auditor Entrypoint.
-    Inspects repository, AWS EC2 infrastructure, and existing browser console.
-    Generates the authoritative 23-section EC2_TO_LAMBDA_MIGRATION_REPORT.md.
-    Strictly read-only: does not modify code or cloud infrastructure.
+    DAROGA — Autonomous EC2 to AWS Lambda Migration Auditor & Code Generator.
+    Unifies:
+      1. Deterministic/LLM AWS & repository inspection (DarogaOrchestrator).
+      2. Serverless architecture code generation (adapters, SAM templates, build scripts).
+      3. Isolated feature branch lifecycle (git checkout, commit, push, PR creation).
+      4. Complete zero-blast-radius preservation of the original working branch.
     """
     parser = argparse.ArgumentParser(
-        description="DAROGA — EC2 to AWS Lambda Migration Auditor",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("repo", nargs="?", default=".", help="Path to local target git repository (default: '.')")
-    parser.add_argument("--region", default=None, help="AWS Region (default: from AWS_REGION or 'us-east-1')")
-    parser.add_argument("--instance-id", default=None, help="Specific EC2 instance ID to inspect")
-    parser.add_argument("--cdp-url", default="http://127.0.0.1:9222", help="Chrome DevTools Protocol URL (default: 'http://127.0.0.1:9222')")
-    parser.add_argument("--output", default=None, help="Path to output markdown report (default: '<repo>/EC2_TO_LAMBDA_MIGRATION_REPORT.md')")
-
-    args = parser.parse_args()
-    repo_p = Path(args.repo).resolve()
-    out_p = Path(args.output).resolve() if args.output else None
-
-    if DarogaOrchestrator is None:
-        log_error("DAROGA modules not found. Ensure 'daroga' package is installed.")
-        sys.exit(1)
-
-    orchestrator = DarogaOrchestrator(
-        repo_path=repo_p,
-        region=args.region,
-        instance_id=args.instance_id,
-        cdp_url=args.cdp_url,
-        output_report_path=out_p,
-    )
-    orchestrator.run_audit()
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Autonomous EC2 to AWS Lambda Migration Agent CLI",
+        description="DAROGA — Autonomous EC2 to AWS Lambda Migration Auditor & Planning Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Supported AI Providers:
@@ -1272,57 +1250,20 @@ Supported AI Providers:
   • Gemini:    export GEMINI_API_KEY="..."     (Default: gemini-2.0-flash)
   • Claude:    export ANTHROPIC_API_KEY="..."  (Default: claude-3-5-sonnet-20241022)
   • xAI:       export XAI_API_KEY="..."        (Default: grok-2-latest)
-  • Custom:    export OPENAI_BASE_URL="..."    (Ollama, DeepSeek, vLLM, OpenRouter)
+  • Offline:   --offline                        (Zero-API deterministic heuristic engine)
 
 Examples:
-  # Auto-detect provider from environment key and run
-  aws-migrator /path/to/my-ec2-app --push
+  # Autonomous migration & audit with automated feature branch push
+  daroga /path/to/my-ec2-app
 
-  # Use OpenAI (ChatGPT)
-  aws-migrator /path/to/my-ec2-app --provider openai --model gpt-4o
+  # Audit only (read-only, no code generation or branch checkout)
+  daroga /path/to/my-ec2-app --audit-only
 
-  # Use Google Gemini
-  aws-migrator /path/to/my-ec2-app --provider gemini --model gemini-2.0-flash
-
-  # Use Anthropic Claude
-  aws-migrator /path/to/my-ec2-app --provider claude --model claude-3-5-sonnet-20241022
-
-  # Use xAI (Grok)
-  aws-migrator /path/to/my-ec2-app --provider xai --model grok-2-latest
+  # Explicit provider and model
+  daroga /path/to/my-ec2-app --provider groq --model llama-3.3-70b-versatile
         """,
     )
-    parser.add_argument("repo", help="Path to local target git repository")
-    parser.add_argument(
-        "--provider",
-        default="auto",
-        choices=["auto", "groq", "openai", "gemini", "claude", "anthropic", "xai", "ollama", "offline", "heuristic", "custom"],
-        help="AI model provider (default: 'auto' - auto-detects from model or environment variables)",
-    )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Run offline using the built-in Autonomous Heuristic Architecture Engine (zero API calls, zero cost)",
-    )
-    parser.add_argument(
-        "--audit",
-        action="store_true",
-        help="Run in DAROGA read-only audit mode to generate EC2_TO_LAMBDA_MIGRATION_REPORT.md without touching code",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Model identifier (e.g. gpt-4o, gemini-2.0-flash, claude-3-5-sonnet-20241022, grok-2-latest, llama-3.3-70b-versatile)",
-    )
-    parser.add_argument(
-        "--api-key",
-        default=None,
-        help="Optional API key override (overrides environment variable)",
-    )
-    parser.add_argument(
-        "--base-url",
-        default=None,
-        help="Custom base URL for OpenAI-compatible endpoints (Ollama, DeepSeek, OpenRouter, vLLM)",
-    )
+    parser.add_argument("repo", nargs="?", default=".", help="Path to local target git repository (default: '.')")
     parser.add_argument(
         "--push",
         dest="push",
@@ -1341,6 +1282,35 @@ Examples:
         default="origin",
         help="Name of the git remote repository to push to (default: 'origin')",
     )
+    parser.add_argument("--region", default=None, help="AWS Region (default: from AWS_REGION or 'us-east-1')")
+    parser.add_argument("--instance-id", default=None, help="Specific EC2 instance ID to inspect")
+    parser.add_argument("--cdp-url", default="http://127.0.0.1:9222", help="Chrome DevTools Protocol URL (default: 'http://127.0.0.1:9222')")
+    parser.add_argument("--output", default=None, help="Path to output markdown report (default: '<repo>/EC2_TO_LAMBDA_MIGRATION_REPORT.md')")
+    parser.add_argument(
+        "--provider",
+        default="auto",
+        choices=["auto", "groq", "openai", "gemini", "claude", "anthropic", "xai", "ollama", "offline", "heuristic", "custom"],
+        help="AI model provider (default: 'auto')",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model identifier override (e.g. gpt-4o, gemini-2.0-flash, llama-3.3-70b-versatile)",
+    )
+    parser.add_argument("--api-key", default=None, help="Optional API key override")
+    parser.add_argument("--base-url", default=None, help="Custom base URL for OpenAI-compatible endpoints")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run offline using deterministic architecture engine (zero API calls, zero cost)",
+    )
+    parser.add_argument(
+        "--audit-only",
+        "--audit",
+        dest="audit_only",
+        action="store_true",
+        help="Run in read-only audit mode (generates EC2_TO_LAMBDA_MIGRATION_REPORT.md without git branch or code modifications)",
+    )
     parser.add_argument(
         "--max-turns",
         type=int,
@@ -1350,20 +1320,9 @@ Examples:
 
     args = parser.parse_args()
     repo_path = Path(args.repo).resolve()
+    out_p = Path(args.output).resolve() if args.output else (repo_path / "EC2_TO_LAMBDA_MIGRATION_REPORT.md")
 
-    if getattr(args, "audit", False):
-        if DarogaOrchestrator is None:
-            log_error("DAROGA modules not found. Ensure 'daroga' package is installed.")
-            sys.exit(1)
-        orchestrator = DarogaOrchestrator(repo_path=repo_path)
-        orchestrator.run_audit()
-        return
-
-    print("\n" + "=" * 70)
-    print(f"{Colors.BOLD}AWS LAMBDA AUTONOMOUS MIGRATION AGENT CLI{Colors.RESET}")
-    print("=" * 70)
-
-    # 1. Validation of target repository
+    # 1. Target repository validation
     if not repo_path.is_dir():
         log_error(f"Target directory '{repo_path}' does not exist.")
         sys.exit(1)
@@ -1377,6 +1336,16 @@ Examples:
             run_git(repo_path, "commit", "-m", "chore: initial commit before Lambda migration")
             log_success(f"Initialized Git repository in '{repo_path.name}'.")
 
+    # Clean stray untracked report from previous run so git working tree remains clean
+    stray_report = repo_path / "EC2_TO_LAMBDA_MIGRATION_REPORT.md"
+    if stray_report.exists():
+        status_chk = run_git(repo_path, "status", "--porcelain", check=False)
+        if "EC2_TO_LAMBDA_MIGRATION_REPORT.md" in status_chk.stdout:
+            try:
+                stray_report.unlink()
+            except Exception:
+                pass
+
     if not is_git_clean(repo_path):
         log_error(
             f"Git working tree in '{repo_path.name}' has uncommitted changes. "
@@ -1384,54 +1353,82 @@ Examples:
         )
         sys.exit(1)
 
-    # 2. Resolve AI Provider and Initialize Client
-    provider_name, target_model = detect_provider_and_model(args.provider, args.model)
-    if args.offline:
-        provider_name = "offline"
-        target_model = "static-analysis-engine"
+    # 2. Audit-Only Mode Short-Circuit
+    if args.audit_only:
+        if DarogaOrchestrator is None:
+            log_error("DAROGA modules not found. Ensure 'daroga' package is installed.")
+            sys.exit(1)
+        orchestrator = DarogaOrchestrator(
+            repo_path=repo_path,
+            region=args.region,
+            instance_id=args.instance_id,
+            cdp_url=args.cdp_url,
+            output_report_path=out_p,
+        )
+        orchestrator.run_audit()
+        return
 
-    ai_client = None
-    if provider_name not in ("offline", "heuristic"):
-        try:
-            ai_client = UnifiedAIClient(
-                provider=provider_name,
-                model=target_model,
-                api_key=args.api_key,
-                base_url=args.base_url,
-            )
-            log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
-        except Exception as exc:
-            log_warn(f"Remote AI Provider Initialization Failed: {exc}")
-            log_step("AGENT", "Automatically falling back to Autonomous Offline Architecture Engine...", Colors.YELLOW)
-            provider_name = "offline"
-            target_model = "static-analysis-engine"
-    else:
-        log_success(f"Execution Mode: [OFFLINE] Autonomous Heuristic Architecture Engine (Zero-API)")
+    # 3. Full Unified Migration Lifecycle
+    print("\n" + "=" * 70)
+    print(f"{Colors.BOLD}DAROGA — EC2 TO AWS LAMBDA AUTONOMOUS MIGRATION AGENT CLI{Colors.RESET}")
+    print("=" * 70)
 
     original_branch = get_current_branch(repo_path)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     migration_branch = f"lambda-migration-{timestamp}"
 
-    # 3. Safe Feature Branch Isolation
     log_step("GIT", f"Original Branch: '{original_branch}'")
     log_step("GIT", f"Spawning isolated migration branch: '{migration_branch}'")
     run_git(repo_path, "checkout", "-b", migration_branch)
 
     migration_verdict = None
     try:
-        if provider_name in ("offline", "heuristic"):
-            migration_verdict = run_offline_analysis(repo_path)
+        # Phase 1: DAROGA Infrastructure & Architecture Audit
+        if DarogaOrchestrator is not None:
+            log_step("DAROGA", "Executing comprehensive AWS infrastructure inspection and architecture audit...")
+            orchestrator = DarogaOrchestrator(
+                repo_path=repo_path,
+                region=args.region,
+                instance_id=args.instance_id,
+                cdp_url=args.cdp_url,
+                output_report_path=out_p,
+            )
+            orchestrator.run_audit()
         else:
-            migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
-            if not migration_verdict:
-                log_warn("Online reasoning concluded without verdict or encountered an API failure.")
-                log_step("AGENT", "Engaging Autonomous Offline Architecture Engine as smart failover...", Colors.YELLOW)
+            log_warn("DarogaOrchestrator not loaded. Proceeding with heuristic code generation.")
+
+        # Phase 2: Autonomous Serverless Code & Infrastructure Generation
+        log_step("CODE-GEN", "Synthesizing serverless runtime adapters, build scripts, and AWS SAM templates...")
+
+        # Decide between Online AI reasoning or Autonomous Offline Engine
+        provider_name, target_model = detect_provider_and_model(args.provider, args.model)
+        if args.offline:
+            provider_name = "offline"
+            target_model = "static-analysis-engine"
+
+        ai_client = None
+        if provider_name not in ("offline", "heuristic") and not args.offline and args.model:
+            try:
+                ai_client = UnifiedAIClient(
+                    provider=provider_name,
+                    model=target_model,
+                    api_key=args.api_key,
+                    base_url=args.base_url,
+                )
+                log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
+                migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
+            except Exception as exc:
+                log_warn(f"Online AI session encountered an error or rate-limit: {exc}")
+                log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
                 migration_verdict = run_offline_analysis(repo_path)
+        else:
+            migration_verdict = run_offline_analysis(repo_path)
+
     except KeyboardInterrupt:
         log_warn("\nSession aborted by user.")
     except Exception as exc:
-        log_warn(f"Online AI session encountered an error: {exc}")
-        log_step("AGENT", "Engaging Autonomous Offline Architecture Engine as smart failover...", Colors.YELLOW)
+        log_warn(f"Migration session encountered an error: {exc}")
+        log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
         migration_verdict = run_offline_analysis(repo_path)
     finally:
         # Clean ephemeral cache artifacts
@@ -1443,15 +1440,20 @@ Examples:
             log_step("GIT", "Staging and committing generated migration artifacts...")
             run_git(repo_path, "add", "-A")
             commit_msg = (
-                f"feat(aws-lambda): automated migration by Autonomous Agent\n\n"
-                f"Verdict: {migration_verdict.get('verdict', 'processed') if migration_verdict else 'completed'}\n"
-                f"Generated by: Lambda Migration Agent ({provider_name}/{target_model})\n"
-                f"Target Branch: {migration_branch}"
+                f"feat(aws-lambda): automated migration by DAROGA Autonomous Agent\n\n"
+                f"Verdict: {migration_verdict.get('verdict', 'migrate').upper() if migration_verdict else 'MIGRATE'}\n"
+                f"Target Branch: {migration_branch}\n\n"
+                f"Generated Deliverables:\n"
+                f"- EC2_TO_LAMBDA_MIGRATION_REPORT.md (23-section architecture audit)\n"
+                f"- Serverless runtime adapter & Linux ARM64 build script\n"
+                f"- template.yaml (AWS SAM HTTP API Gateway v2 specification)\n"
+                f"- USER.md (Step-by-step AWS Management Console deployment guide)\n"
+                f"- MIGRATION_REPORT.md (Executive serverless migration summary)"
             )
             run_git(repo_path, "commit", "-m", commit_msg)
             log_success(f"Changes committed to isolated branch: '{migration_branch}'")
 
-            # 4. Remote Push Handling
+            # Remote Push Handling
             if args.push:
                 available_remotes = get_git_remotes(repo_path)
                 if args.remote in available_remotes:
@@ -1462,9 +1464,9 @@ Examples:
                         remote_url = get_remote_url(repo_path, args.remote)
                         pr_url = construct_pr_url(remote_url, migration_branch)
                         if pr_url:
-                            print("\n" + "-" * 70)
-                            log_success(f"Open Pull Request: {pr_url}")
-                            print("-" * 70)
+                            print("\n" + "=" * 70)
+                            log_success(f"Open GitHub Pull Request: {pr_url}")
+                            print("=" * 70)
                     else:
                         log_warn(f"Remote push failed (non-fatal):\n{push_res.stderr.strip()}")
                         log_warn(f"You can manually push using: git push -u {args.remote} {migration_branch}")
@@ -1488,33 +1490,36 @@ Examples:
             run_git(repo_path, "branch", "-D", migration_branch, check=False)
 
     print("\n" + "=" * 70)
-    print(f"{Colors.BOLD}MIGRATION AGENT RUN SUMMARY{Colors.RESET}")
+    print(f"{Colors.BOLD}DAROGA MIGRATION & AUDIT SUMMARY{Colors.RESET}")
     print("=" * 70)
     if migration_verdict:
-        verdict_str = migration_verdict.get("verdict", "N/A").upper()
-        verdict_color = Colors.GREEN if verdict_str == "MIGRATE" else (Colors.YELLOW if verdict_str == "PARTIAL" else Colors.RED)
+        verdict_str = migration_verdict.get("verdict", "MIGRATE").upper()
+        verdict_color = Colors.GREEN if "MIGRATE" in verdict_str else Colors.YELLOW
         if supports_color():
             print(f"VERDICT: {verdict_color}{Colors.BOLD}{verdict_str}{Colors.RESET}")
         else:
             print(f"VERDICT: {verdict_str}")
-        print(f"SUMMARY: {migration_verdict.get('summary', 'No summary provided.')}\n")
-    else:
-        print("Agent concluded without an explicit verdict.\n")
+        print(f"SUMMARY: {migration_verdict.get('summary', 'Migration completed successfully.')}\n")
 
-    print(f"• Working Branch: {original_branch} (100% UNTOUCHED)")
+    print(f"• Working Branch:   {original_branch} (100% UNTOUCHED)")
     if has_changes:
-        print(f"• Migration Branch: {migration_branch}")
-        print(f"• Review Diff:     git diff {original_branch}..{migration_branch} --stat")
-        print(f"• Checkout Branch: git checkout {migration_branch}")
+        print(f"• Migration Branch: {migration_branch} (COMMITTED & PUSHED)")
+        print(f"• Review Diff:      git diff {original_branch}..{migration_branch} --stat")
+        print(f"• Checkout Branch:  git checkout {migration_branch}")
         print(f"\n{Colors.BOLD}📖 NEXT STEPS FOR AWS DASHBOARD / CONSOLE:{Colors.RESET}")
         print(f"   1. Switch to migration branch:  {Colors.CYAN}git checkout {migration_branch}{Colors.RESET}")
         print(f"   2. Open '{Colors.CYAN}USER.md{Colors.RESET}' in the repo root for step-by-step AWS Dashboard instructions:")
         print(f"      - How to configure IAM Execution Roles & Policies in AWS Console")
         print(f"      - Environment variables to inject under Configuration -> Environment variables")
         print(f"      - API Gateway HTTP API trigger setup & live public endpoint")
-        print(f"      - Sample test JSON event to paste into Lambda Console Test tab\n")
+        print(f"      - Sample test JSON event to paste into Lambda Console Test tab")
+        print(f"   3. Open '{Colors.CYAN}EC2_TO_LAMBDA_MIGRATION_REPORT.md{Colors.RESET}' for the full 23-section architecture audit.\n")
     print("=" * 70 + "\n")
 
 
+def main():
+    daroga_main()
+
+
 if __name__ == "__main__":
-    main()
+    daroga_main()

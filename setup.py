@@ -38,8 +38,8 @@ setup(
     entry_points={
         "console_scripts": [
             "daroga=agent:daroga_main",
-            "aws-migrator=agent:main",
-            "aws_migrator=agent:main",
+            "aws-migrator=agent:daroga_main",
+            "aws_migrator=agent:daroga_main",
         ],
     },
     python_requires=">=3.10",
