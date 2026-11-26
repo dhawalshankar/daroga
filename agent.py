@@ -167,16 +167,21 @@ OPERATING CONTEXT:
 You operate strictly within the provided repository on a dedicated migration git branch.
 You have access to tools that let you inspect source code, write new artifacts, and run syntax/schema validations.
 
+FREE-TIER TOKEN & RATE-LIMIT OPTIMIZATION:
+- Be extremely economical: inspect ONLY backend server entrypoints and deployment manifests (e.g. main.go, go.mod, app.py, Dockerfile, requirements.txt).
+- Completely IGNORE frontend UI assets, React/Next.js pages, CSS, and static files.
+- Reach your verdict quickly in 3 to 5 tool turns to conserve API rate limits.
+
 MULTI-LANGUAGE & ARCHITECTURE AWARENESS:
 - Python: Flask, FastAPI, Django (apig-wsgi, Mangum).
 - Golang: Go HTTP servers, gin, fiber, echo (AWS Lambda custom runtime `provided.al2023` or container).
-- Node.js / TypeScript: Express, Next.js, Fastify (@vendia/serverless-express).
+- Node.js / TypeScript: Express, Fastify (@vendia/serverless-express).
 - Docker Daemons / Compilers: If the application executes `docker run`, uses Docker-in-Docker, or provides an isolated compiler sandbox (like an online code runner / IDE), AWS Lambda CANNOT host a Docker daemon. The verdict MUST be `do_not_migrate` (or `partial`), recommending AWS ECS Fargate!
 
 AUTONOMOUS DECISION-MAKING PROCEDURE:
 1. EXPLORATION & ARCHITECTURAL DISCOVERY:
-   - Use `list_files` to understand repository topology.
-   - Use `read_file` to inspect dependency manifests (`requirements.txt`, `package.json`, `go.mod`, Dockerfiles, etc.), entrypoint files, routing logic, and configuration.
+   - Use `list_files` to locate primary backend files.
+   - Use `read_file` on core server files only.
    - Identify statefulness: inspect for local filesystem writes, SQLite/embedded databases, in-memory caches, persistent background threads/daemons, WebSockets, Docker daemon execution, or tasks running > 15 minutes.
 
 2. VERDICT DETERMINATION:
@@ -477,19 +482,14 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     if p != "auto":
         default_models = {
             "groq": "llama-3.3-70b-versatile",
-            "openai": "gpt-4o",
+            "openai": "gpt-4o-mini",
             "gemini": "gemini-2.0-flash",
-            "claude": "claude-3-5-sonnet-20241022",
-            "anthropic": "claude-3-5-sonnet-20241022",
+            "claude": "claude-3-5-haiku-20241022",
+            "anthropic": "claude-3-5-haiku-20241022",
             "xai": "grok-2-latest",
             "custom": "default",
         }
-        if p == "gemini":
-            valid_gemini = ("gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash-exp")
-            if model_opt and not any(v in model_opt.lower() for v in ("flash", "pro")):
-                log_warn(f"Model '{model_opt}' is not a recognized Gemini model name. Auto-routing to 'gemini-2.0-flash'.")
-                return "gemini", "gemini-2.0-flash"
-        model = model_opt or default_models.get(p, "gpt-4o")
+        model = model_opt or default_models.get(p, "llama-3.3-70b-versatile")
         return p, model
 
     # Auto-detection from model name if provided
@@ -596,15 +596,22 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
             log_step("EXPLORING", f"Scanning repository tree: '{rel_dir}'", Colors.CYAN)
             base_dir = safe_resolve_path(repo, rel_dir)
             files = []
+            ignored_dirs = {
+                ".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode",
+                "dist", "build", ".next", ".turbo", "coverage", "static", "public", "assets",
+                "images", "fonts", "vendor"
+            }
+            ignored_exts = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".lock", ".map", ".woff", ".woff2", ".ttf"}
             for p in sorted(base_dir.rglob("*")):
                 if not p.is_file():
                     continue
-                rel_parts = p.relative_to(repo).parts
-                if any(x in rel_parts for x in (".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", "dist", "build")):
+                if any(part in ignored_dirs for part in p.parts):
+                    continue
+                if p.suffix.lower() in ignored_exts:
                     continue
                 files.append(p.relative_to(repo).as_posix())
-            res = "\n".join(files[:250]) if files else "(empty repository)"
-            log_success(f"Discovered {len(files)} files in '{rel_dir}'")
+            res = "\n".join(files[:150]) if files else "(empty repository)"
+            log_success(f"Discovered {len(files)} relevant server files in '{rel_dir}'")
             return res
 
         if name == "read_file":
@@ -615,8 +622,10 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                 log_warn(f"File not found: '{rel_path}'")
                 return f"ERROR: File '{rel_path}' does not exist."
             content = target.read_text(encoding="utf-8", errors="replace")
-            log_success(f"Loaded {len(content)} characters from '{rel_path}'")
-            return content[:16000]
+            # Limit to 5,000 characters to strictly preserve free tier token quotas
+            truncated = content[:5000]
+            log_success(f"Loaded {len(truncated)} characters from '{rel_path}'")
+            return truncated
 
         if name == "write_file":
             rel_path = args["path"]
