@@ -148,40 +148,52 @@ ALLOWED_COMMAND_PREFIXES = (
     "pytest",
     "sam validate",
     "node --check",
+    "go vet",
+    "go build",
+    "go test",
+    "npm run build",
+    "npm test",
+    "npm run",
+    "npx",
 )
 
 BLOCKED_COMMAND_KEYWORDS = (
     "push", "merge", "deploy", "aws", "apply", "sudo", "rm", "curl", "wget", "git",
 )
 
-SYSTEM_PROMPT = """You are an Autonomous Cloud Migration Agent specializing in converting EC2-hosted services into production-ready AWS Lambda serverless architectures.
+SYSTEM_PROMPT = """You are an Autonomous Cloud Migration Agent specializing in converting EC2-hosted services into production-ready AWS architectures (AWS Lambda Serverless or AWS ECS Fargate).
 
 OPERATING CONTEXT:
 You operate strictly within the provided repository on a dedicated migration git branch.
 You have access to tools that let you inspect source code, write new artifacts, and run syntax/schema validations.
 
+MULTI-LANGUAGE & ARCHITECTURE AWARENESS:
+- Python: Flask, FastAPI, Django (apig-wsgi, Mangum).
+- Golang: Go HTTP servers, gin, fiber, echo (AWS Lambda custom runtime `provided.al2023` or container).
+- Node.js / TypeScript: Express, Next.js, Fastify (@vendia/serverless-express).
+- Docker Daemons / Compilers: If the application executes `docker run`, uses Docker-in-Docker, or provides an isolated compiler sandbox (like an online code runner / IDE), AWS Lambda CANNOT host a Docker daemon. The verdict MUST be `do_not_migrate` (or `partial`), recommending AWS ECS Fargate!
+
 AUTONOMOUS DECISION-MAKING PROCEDURE:
 1. EXPLORATION & ARCHITECTURAL DISCOVERY:
    - Use `list_files` to understand repository topology.
-   - Use `read_file` to inspect dependency manifests (`requirements.txt`, `package.json`, etc.), entrypoint files (`app.py`, `server.py`, `main.py`), routing logic, and configuration.
-   - Identify statefulness: inspect for local filesystem writes, SQLite/embedded databases, in-memory caches, persistent background threads/daemons, WebSockets, or tasks running > 15 minutes.
+   - Use `read_file` to inspect dependency manifests (`requirements.txt`, `package.json`, `go.mod`, Dockerfiles, etc.), entrypoint files, routing logic, and configuration.
+   - Identify statefulness: inspect for local filesystem writes, SQLite/embedded databases, in-memory caches, persistent background threads/daemons, WebSockets, Docker daemon execution, or tasks running > 15 minutes.
 
 2. VERDICT DETERMINATION:
    Synthesize your findings and determine an objective verdict:
    - `migrate`: Application is stateless or easily decoupled; standard HTTP/API or event triggers fit well within Lambda concurrency & limits (<= 15 min).
-   - `partial`: Application can run on Lambda with architectural adjustments (e.g., local state must move to DynamoDB/S3, background tasks to SQS/EventBridge).
-   - `do_not_migrate`: Application violates Lambda fundamentals (e.g., permanent background daemon, hard WebSocket dependencies, heavy long-running continuous processing > 15 mins).
+   - `partial`: Application can run on Lambda with architectural adjustments (e.g., local state must move to DynamoDB/S3, background tasks to SQS/EventBridge, or frontend on Amplify / Vercel while backend stays on ECS).
+   - `do_not_migrate`: Application violates Lambda fundamentals (e.g., requires Docker daemon / compiler containers, permanent background daemons, persistent WebSockets, heavy continuous processing > 15 mins).
 
 3. ARTIFACT GENERATION (When verdict is `migrate` or `partial`):
-   - `lambda_function.py`: Production-ready Lambda entrypoint with standard WSGI/ASGI bridge (e.g. `apig_wsgi.make_lambda_handler(app)` for Flask, `Mangum(app)` for FastAPI). Include structured logging and cold-start optimization.
-   - `requirements.txt`: Append required Lambda adapters (e.g., `apig-wsgi>=2.17.0` or `mangum>=0.17.0`) while preserving existing dependencies without duplicate definitions.
-   - `template.yaml`: Complete AWS Serverless Application Model (SAM) template defining the `AWS::Serverless::Function`, runtime, memory size (default 512MB), timeout (30s), environment variables, and `HttpApi` / `Api` event triggers.
-   - DO NOT delete or corrupt original application files. Keep existing logic intact and point the Lambda handler to the existing app instance.
+   - For Python: `lambda_function.py`, updated `requirements.txt`, `template.yaml` (SAM).
+   - For Golang: Lambda handler or SAM `provided.al2023` template.
+   - For Node: Serverless adapter and SAM template.
+   - DO NOT delete or corrupt original application files. Keep existing logic intact.
 
 4. CLOSED-LOOP VALIDATION & SELF-HEALING:
-   - Execute `run_command` with `python -m py_compile lambda_function.py`.
-   - If AWS SAM CLI is available in the environment, run `sam validate`.
-   - CRITICAL: If any validation command fails, inspect the error output, determine the root cause, rewrite the faulty file using `write_file`, and re-run validation until it succeeds.
+   - Execute appropriate validation command (`py_compile`, `go vet`, `sam validate`, `node --check`).
+   - If any validation command fails, inspect the error output, determine the root cause, rewrite the faulty file using `write_file`, and re-run validation until it succeeds.
 
 5. GENERATE COMPREHENSIVE DOCUMENTATION:
    - Generate `MIGRATION_REPORT.md` (Technical architectural report):
@@ -190,22 +202,11 @@ AUTONOMOUS DECISION-MAKING PROCEDURE:
      * Production Readiness Checklist (IAM policies, VPC subnets, AWS Secrets Manager / Parameter Store, S3/DynamoDB decoupling)
      * Workload Cost Comparison (Always-on EC2 instance vs Lambda Pay-per-Request model with estimated breakeven points)
    - Generate `USER.md` (Step-by-Step AWS Console / Dashboard Guide for the Developer/User):
-     * This file is specifically written for the user so they know EXACTLY what buttons to click and configurations to make in their AWS Management Console (Dashboard) to bring the migrated Lambda live.
-     * Section 1: "Quick Deployment via AWS SAM" (how to run `sam build && sam deploy --guided` from terminal).
-     * Section 2: "Manual AWS Lambda Console Setup" (Step-by-step console clicks: Function Name, Runtime Python 3.11, Handler path `lambda_function.lambda_handler`, Memory 512MB, Timeout 30s).
-     * Section 3: "Environment Variables Configuration" (Go to Configuration -> Environment Variables -> Edit, list all required keys found in the app with placeholder values).
-     * Section 4: "IAM Execution Role & Permissions" (Go to Configuration -> Permissions -> attach AWSLambdaBasicExecutionRole and any needed DB/S3/VPC access policies).
-     * Section 5: "API Gateway HTTP Ingress Trigger" (Go to Function Overview -> Add Trigger -> API Gateway -> Create HTTP API -> Open/JWT security -> Route /{proxy+}). Note that AWS Console displays the live HTTP URL.
-     * Section 6: "Console Test Event" (Provide an exact JSON payload the user can paste into the AWS Lambda 'Test' tab to confirm HTTP 200 OK).
-     * Section 7: "Logs & Monitoring" (How to view logs in CloudWatch under the Monitor tab).
+     * If `migrate`: step-by-step clicks for AWS Lambda Console, IAM execution roles, environment variables, API Gateway trigger, and test payload.
+     * If `do_not_migrate`: step-by-step AWS Management Console setup for **AWS ECS Fargate** (ECS Console -> Create Cluster -> Task Definition -> Deploy Fargate Service) explaining why Docker daemon / compiler sandboxes belong on Fargate.
 
 6. COMPLETION:
    - Call the `finish` tool with the verdict and a structured executive summary.
-
-If the verdict is `do_not_migrate`:
-- Write `MIGRATION_REPORT.md` detailing the architectural blockers and recommended modernizations.
-- Write `USER.md` explaining step-by-step AWS Console actions for alternative hosting on AWS ECS Fargate (AWS Console -> ECS -> Create Cluster -> Create Task Definition -> Launch Service).
-- Call `finish`.
 """
 
 # ==============================================================================
@@ -366,9 +367,27 @@ class UnifiedAIClient:
     def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
         if self.mode == "openai_compat":
+            # Sanitize messages for OpenAI / Gemini / xAI compatibility
+            cleaned_messages = []
+            for m in messages:
+                clean_m = {"role": m["role"]}
+                if m.get("content") is not None and m.get("content") != "":
+                    clean_m["content"] = str(m["content"])
+                elif m["role"] == "assistant" and not m.get("tool_calls"):
+                    clean_m["content"] = ""
+
+                if m.get("tool_calls"):
+                    clean_m["tool_calls"] = m["tool_calls"]
+                if m.get("tool_call_id"):
+                    clean_m["tool_call_id"] = str(m["tool_call_id"])
+                if m.get("name"):
+                    clean_m["name"] = str(m["name"])
+                cleaned_messages.append(clean_m)
+
+            log_step("AGENT", f"Querying {self.provider.upper()} ({self.model})...", Colors.BLUE)
             resp = self.openai_client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=cleaned_messages,
                 tools=TOOLS,
                 tool_choice="auto",
                 temperature=0.1,
@@ -465,6 +484,11 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
             "xai": "grok-2-latest",
             "custom": "default",
         }
+        if p == "gemini":
+            valid_gemini = ("gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash-exp")
+            if model_opt and not any(v in model_opt.lower() for v in ("flash", "pro")):
+                log_warn(f"Model '{model_opt}' is not a recognized Gemini model name. Auto-routing to 'gemini-2.0-flash'.")
+                return "gemini", "gemini-2.0-flash"
         model = model_opt or default_models.get(p, "gpt-4o")
         return p, model
 
@@ -568,38 +592,52 @@ def safe_resolve_path(repo: Path, rel_path: str) -> Path:
 def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int = DEFAULT_TIMEOUT_SEC) -> str:
     try:
         if name == "list_files":
-            base_dir = safe_resolve_path(repo, args.get("path", "."))
+            rel_dir = args.get("path", ".")
+            log_step("EXPLORING", f"Scanning repository tree: '{rel_dir}'", Colors.CYAN)
+            base_dir = safe_resolve_path(repo, rel_dir)
             files = []
             for p in sorted(base_dir.rglob("*")):
                 if not p.is_file():
                     continue
                 rel_parts = p.relative_to(repo).parts
-                if any(x in rel_parts for x in (".git", "__pycache__", "node_modules", ".venv", "venv", ".idea")):
+                if any(x in rel_parts for x in (".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", "dist", "build")):
                     continue
                 files.append(p.relative_to(repo).as_posix())
-            return "\n".join(files[:250]) if files else "(empty repository)"
+            res = "\n".join(files[:250]) if files else "(empty repository)"
+            log_success(f"Discovered {len(files)} files in '{rel_dir}'")
+            return res
 
         if name == "read_file":
-            target = safe_resolve_path(repo, args["path"])
+            rel_path = args["path"]
+            log_step("READING", f"Inspecting source code: '{rel_path}'", Colors.CYAN)
+            target = safe_resolve_path(repo, rel_path)
             if not target.exists():
-                return f"ERROR: File '{args['path']}' does not exist."
+                log_warn(f"File not found: '{rel_path}'")
+                return f"ERROR: File '{rel_path}' does not exist."
             content = target.read_text(encoding="utf-8", errors="replace")
+            log_success(f"Loaded {len(content)} characters from '{rel_path}'")
             return content[:16000]
 
         if name == "write_file":
-            target = safe_resolve_path(repo, args["path"])
+            rel_path = args["path"]
+            log_step("GENERATING", f"Authoring migration artifact: '{rel_path}' ({len(args['content'])} bytes)", Colors.YELLOW)
+            target = safe_resolve_path(repo, rel_path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(args["content"], encoding="utf-8")
-            return f"SUCCESS: Written {len(args['content'])} bytes to '{args['path']}'"
+            log_success(f"Generated artifact: '{rel_path}'")
+            return f"SUCCESS: Written {len(args['content'])} bytes to '{rel_path}'"
 
         if name == "run_command":
             cmd = args["command"].strip()
+            log_step("VALIDATING", f"Running check: '{cmd}'", Colors.HEADER)
             if not cmd.startswith(ALLOWED_COMMAND_PREFIXES):
+                log_warn(f"Command not permitted: {cmd}")
                 return (
                     f"BLOCKED: Command not in safety whitelist. "
                     f"Permitted prefixes: {', '.join(ALLOWED_COMMAND_PREFIXES)}"
                 )
             if any(forbidden in cmd.split() for forbidden in BLOCKED_COMMAND_KEYWORDS):
+                log_warn(f"Command contains blocked keyword: {cmd}")
                 return f"BLOCKED: Command contains disallowed keyword. Disallowed: {BLOCKED_COMMAND_KEYWORDS}"
 
             try:
@@ -619,14 +657,27 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                     output += f"STDOUT:\n{proc.stdout[-3000:]}\n"
                 if proc.stderr:
                     output += f"STDERR:\n{proc.stderr[-3000:]}\n"
+
+                if proc.returncode == 0:
+                    log_success(f"Validation passed: '{cmd}'")
+                else:
+                    log_warn(f"Validation failed (exit code {proc.returncode}): '{cmd}'")
+
                 return output
             except FileNotFoundError:
+                log_warn(f"Tool not found on host: '{cmd}'")
                 return (
                     f"TOOL NOT FOUND: The binary in '{cmd}' is not installed in the host system. "
                     f"Skipping this check and noting in migration report."
                 )
             except subprocess.TimeoutExpired:
+                log_error(f"Command timed out: '{cmd}'")
                 return f"TIMEOUT: Command '{cmd}' exceeded execution limit of {timeout_sec}s."
+
+        if name == "finish":
+            verdict = args.get("verdict", "").upper()
+            log_step("DECISION", f"Migration Verdict Concluded: [{verdict}]", Colors.GREEN)
+            return "Migration finalized."
 
         return f"ERROR: Unrecognized tool '{name}'."
 
@@ -639,22 +690,35 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
 # ==============================================================================
 def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]]) -> NormalizedResponse:
     """Robust AI completion call with exponential backoff on rate limits."""
-    max_retries = 5
+    max_retries = 3
     for attempt in range(max_retries):
         try:
             return client.chat_completion(messages)
         except Exception as e:
-            err_str = str(e).lower()
+            err_msg = str(e)
+            if hasattr(e, "response") and hasattr(e.response, "text"):
+                try:
+                    err_json = json.loads(e.response.text)
+                    if "error" in err_json and "message" in err_json["error"]:
+                        err_msg = err_json["error"]["message"]
+                    else:
+                        err_msg = e.response.text
+                except Exception:
+                    err_msg = e.response.text
+
+            log_error(f"{client.provider.upper()} API Error: {err_msg}")
+            err_str = err_msg.lower()
             if "rate_limit" in err_str or "429" in err_str:
-                wait_time = 12 * (attempt + 1)
-                log_warn(f"{client.provider.upper()} API rate limit encountered. Waiting {wait_time}s (retry {attempt+1}/{max_retries})...")
+                wait_time = 10 * (attempt + 1)
+                log_warn(f"Rate limit hit. Pausing {wait_time}s (retry {attempt+1}/{max_retries})...")
                 time.sleep(wait_time)
             elif "timeout" in err_str or "connection" in err_str:
                 wait_time = 5 * (attempt + 1)
-                log_warn(f"Network issue encountered: {e}. Retrying in {wait_time}s...")
+                log_warn(f"Network timeout. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
-                raise e
+                raise RuntimeError(err_msg)
+
     raise TimeoutError(f"Exceeded maximum API retries for provider '{client.provider}'.")
 
 
@@ -667,30 +731,23 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
         },
     ]
 
-    log_step("AGENT", f"Reasoning session initialized with provider '{client.provider.upper()}' | model '{client.model}' (Turn budget: {max_turns})")
-
-    malformed_retries = 0
+    log_step("AGENT", f"Session active: provider '{client.provider.upper()}' | model '{client.model}' (Max turns: {max_turns})")
 
     for turn in range(1, max_turns + 1):
+        log_step("AGENT", f"Turn {turn}/{max_turns}: Reasoning with {client.provider.upper()} ({client.model})...", Colors.BLUE)
         try:
             response = call_ai_with_retry(client, messages)
         except Exception as err:
-            malformed_retries += 1
-            log_warn(f"API interaction error ({malformed_retries}/3): {str(err)[:120]}")
-            if malformed_retries > 3:
-                log_error("Aborting session: repeated API request failures.")
-                return None
-            messages.append({
-                "role": "user",
-                "content": "Your previous response resulted in an error. Please retry with valid JSON tool call arguments.",
-            })
-            continue
+            log_error(f"Aborting session due to API failure: {err}")
+            return None
 
         choice = response.choices[0].message
         if choice.content and choice.content.strip():
-            log_step("THOUGHT", choice.content.strip()[:300] + ("..." if len(choice.content) > 300 else ""), Colors.BLUE)
+            log_step("THOUGHT", choice.content.strip()[:350] + ("..." if len(choice.content) > 350 else ""), Colors.BLUE)
 
-        assistant_entry: Dict[str, Any] = {"role": "assistant", "content": choice.content or ""}
+        assistant_entry: Dict[str, Any] = {"role": "assistant"}
+        if choice.content:
+            assistant_entry["content"] = choice.content
         if choice.tool_calls:
             assistant_entry["tool_calls"] = [
                 {
@@ -715,6 +772,7 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
+                    "name": func_name,
                     "content": "ERROR: Tool arguments were not valid JSON. Provide strict JSON formatting.",
                 })
                 continue
@@ -730,7 +788,12 @@ def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT
             else:
                 tool_output = execute_tool(repo, func_name, args)
 
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_output})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": func_name,
+                "content": str(tool_output),
+            })
 
         if completion_data:
             return completion_data
