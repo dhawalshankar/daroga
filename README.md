@@ -138,6 +138,18 @@ To guarantee complete safety for enterprise codebases:
 4. **Read-Only AWS Inspection**: Live cloud checks only invoke `sts:GetCallerIdentity`, `ec2:DescribeInstances`, `ec2:DescribeSecurityGroups`, and `ec2:DescribeVpcs`. No mutating API calls (`RunInstances`, `ModifyInstance`, `CreateFunction`) are ever issued.
 5. **Human-in-the-Loop Review**: Cloud changes are reviewed via a Pull Request. You retain complete control over deployment through AWS SAM or the AWS Console.
 
+```mermaid
+stateDiagram-v2
+    [*] --> SafeMainBranch: Initial State (Active main branch clean)
+    SafeMainBranch --> MigrationBranchCreated: git checkout -b lambda-migration-<timestamp>
+    MigrationBranchCreated --> AuditAndCodeGenerated: Run DAROGA Audit & Generate Serverless IaC
+    AuditAndCodeGenerated --> CommittedToBranch: git commit on feature branch
+    CommittedToBranch --> PushedToRemote: git push -u origin <branch>
+    PushedToRemote --> PRURLGenerated: Generate 1-Click Pull Request URL
+    PRURLGenerated --> SafeMainBranchRestored: git checkout main
+    SafeMainBranchRestored --> [*]: Workspace returned to main (100% UNTOUCHED)
+```
+
 ---
 
 ## Installation & Setup
@@ -277,6 +289,24 @@ On every migration run, DAROGA places the following files onto the isolated feat
 | **`template.yaml`** | AWS SAM template declaring HTTP API Gateway v2, Lambda Graviton compute, and routes. |
 | **`USER.md`** | Human operator manual for the AWS Management Console with step-by-step clicks. |
 | **`MIGRATION_REPORT.md`** | Executive architectural comparison between EC2 and AWS Lambda. |
+
+### Target Serverless Topology
+
+```mermaid
+flowchart LR
+    Client["Client / Web Browser / Mobile"] -->|"HTTPS / REST"| APIGW["Amazon API Gateway HTTP API v2<br/>• Sub-second Latency<br/>• Routes: / and /{proxy+}"]
+    
+    subgraph LambdaCompute ["AWS Serverless Compute (ARM64 Graviton)"]
+        APIGW -->|"v2 Proxy Payload"| Lambda["AWS Lambda Function<br/>• provided.al2023 (Go)<br/>• python3.12 (Python)<br/>• nodejs20.x (Node.js)"]
+        Lambda --> Log["Amazon CloudWatch Logs<br/>(/aws/lambda/<name>)"]
+        Lambda --> Env["Environment Variables<br/>(Configuration tab)"]
+    end
+
+    subgraph Decoupled ["Decoupled Asynchronous Tasks (Optional)"]
+        Lambda -.->|"Background Work"| SQS["Amazon SQS"]
+        SQS -.->|"Worker Ingestion"| Workers["Batch Runner Tasks"]
+    end
+```
 
 ---
 

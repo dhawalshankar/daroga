@@ -15,6 +15,36 @@ Or using the platform wrappers:
 - **Linux / macOS**: `daroga`, `aws-migrator`
 - **Python**: `python agent.py [REPOSITORY_PATH] [FLAGS]`
 
+### CLI Execution Decision Tree
+
+```mermaid
+flowchart TD
+    Start["User Runs: daroga [repo] [flags]"] --> RepoCheck{"Valid Git Repo & Clean Working Tree?"}
+    RepoCheck -- "No" --> Error["Halt & Prompt Commit/Stash"]
+    RepoCheck -- "Yes" --> AuditCheck{"Is --audit-only set?"}
+
+    AuditCheck -- "Yes" --> ReadOnly["Run Deterministic Audit<br/>• Output EC2_TO_LAMBDA_MIGRATION_REPORT.md<br/>• Zero Code Changes & Zero Git Mutations"]
+    ReadOnly --> End1["Audit Complete (Exit 0)"]
+
+    AuditCheck -- "No" --> Branch["Spawn Feature Branch: lambda-migration-<timestamp>"]
+    Branch --> RunAudit["Execute Deep DAROGA Audit"]
+    RunAudit --> ModeCheck{"Is --offline set?"}
+
+    ModeCheck -- "Yes" --> OfflineEngine["Run Autonomous Heuristic Architecture Engine"]
+    ModeCheck -- "No" --> LLMEngine["Run AI Reasoning Engine (Groq / OpenAI / Gemini)"]
+
+    OfflineEngine & LLMEngine --> CodeGen["Generate Deliverables:<br/>• lambda_main adapter<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md & MIGRATION_REPORT.md"]
+
+    CodeGen --> Stage["Stage & Commit to lambda-migration-*"]
+    Stage --> PushCheck{"Is --push enabled? (Default: Yes)"}
+
+    PushCheck -- "Yes" --> Push["git push -u origin <branch><br/>• Construct 1-Click GitHub PR URL"]
+    PushCheck -- "No" --> LocalOnly["Keep Changes Local on Feature Branch"]
+
+    Push & LocalOnly --> Restore["Restore Active Workspace to main (100% Untouched)"]
+    Restore --> Summary["Print Execution Summary & PR Link"]
+```
+
 ---
 
 ## 2. Arguments & Options
@@ -101,6 +131,13 @@ chrome.exe --remote-debugging-port=9222
 # 3. Run DAROGA
 daroga "C:\Users\username\Desktop\code\billing-service"
 ```
+
+```mermaid
+flowchart LR
+    Chrome["Google Chrome<br/>(Logged into AWS Console)<br/>Listening on :9222"] <-->|"Playwright CDP WebSocket"| DAROGA["DAROGA browser_inspector"]
+    DAROGA -->|"Extract Tabs & URLs"| Report["Section 6: AWS Management Console Live State<br/>(EC2_TO_LAMBDA_MIGRATION_REPORT.md)"]
+```
+
 **Action**: DAROGA connects to port 9222, identifies active AWS Management Console tabs, and integrates live console settings into Section 6 of the report.
 
 ---

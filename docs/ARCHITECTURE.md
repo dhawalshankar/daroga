@@ -16,67 +16,47 @@ DAROGA is built upon three foundational tenets:
 
 ## 2. Component Diagram
 
+```mermaid
+flowchart TD
+    User["User CLI Invocation: daroga /path/to/project"] --> Entry["agent.py Entrypoint (Branch Isolation)"]
+    Entry --> Orch["daroga.orchestrator (Audit Coordinator)"]
+
+    subgraph Inspectors ["Deterministic Inspection Engines"]
+        Orch --> S1["repository_scanner<br/>• AST Parsing<br/>• Language Stack<br/>• Monorepo Target"]
+        Orch --> S2["ec2_inspector<br/>• STS Caller Identity<br/>• EC2 & VPC Subnets<br/>• Security Groups"]
+        Orch --> S3["browser_inspector<br/>• Playwright CDP :9222<br/>• AWS Console Tabs<br/>• Live UI State"]
+        Orch --> S4["lambda_compatibility<br/>• 15-min Timeout<br/>• 6MB Payload<br/>• Graviton arm64"]
+        Orch --> S5["cost_estimator<br/>• EC2 24/7 Hourly<br/>• Lambda Free Tier<br/>• 100% Savings Model"]
+    end
+
+    S1 & S2 & S3 & S4 & S5 --> Mapper["architecture_mapper<br/>(Serverless Topology & Graviton Sizing)"]
+    Mapper --> RepGen["report_generator<br/>(23-Section Audit Report)"]
+    RepGen --> CodeGen["Serverless Code Generator<br/>• lambda_main.go / py / js<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md (Console Manual)"]
+    CodeGen --> GitOrch["Git Orchestration Layer<br/>• Stage & Commit 6 Deliverables<br/>• Push to origin<br/>• Construct GitHub PR URL<br/>• Restore main Workspace"]
 ```
-                                  ┌───────────────────────────┐
-                                  │      User CLI Invocation  │
-                                  │  daroga /path/to/project  │
-                                  └─────────────┬─────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │     agent.py Entrypoint   │
-                                  │   (Git Branch Isolation)  │
-                                  └─────────────┬─────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │    daroga.orchestrator    │
-                                  │     (Audit Pipeline)      │
-                                  └─────────────┬─────────────┘
-                                                │
-         ┌───────────────────┬──────────────────┼───────────────────┬───────────────────┐
-         │                   │                  │                   │                   │
-         ▼                   ▼                  ▼                   ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌───────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│repository_scan  │ │  ec2_inspector  │ │browser_inspect│ │lambda_compat    │ │cost_estimator   │
-│                 │ │                 │ │               │ │                 │ │                 │
-│• AST Parsing    │ │• STS Identity   │ │• Playwright   │ │• 15-min Timeout │ │• EC2 Hourly     │
-│• Language Stack │ │• EC2 Instances  │ │• CDP :9222    │ │• 6MB Payload    │ │• Lambda Requests│
-│• Ports/Sockets  │ │• VPC & Subnets  │ │• Console Tabs │ │• Ephemeral Disk │ │• Free Tier (1M) │
-│• Monorepo Scope │ │• Security Groups│ │• Active State │ │• Graviton arm64 │ │• 100% Savings   │
-└────────┬────────┘ └────────┬────────┘ └───────┬───────┘ └────────┬────────┘ └────────┬────────┘
-         │                   │                  │                  │                   │
-         └───────────────────┴──────────────────┼──────────────────┴───────────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │   architecture_mapper     │
-                                  │ (Topology & Graviton arm64│
-                                  └─────────────┬─────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │     report_generator      │
-                                  │(23-Section Audit Document)│
-                                  └─────────────┬─────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │ Serverless Code Generator │
-                                  │ • lambda_main.go / py     │
-                                  │ • build_lambda.sh         │
-                                  │ • template.yaml (SAM)     │
-                                  │ • USER.md (Console Guide) │
-                                  └─────────────┬─────────────┘
-                                                │
-                                                ▼
-                                  ┌───────────────────────────┐
-                                  │     Git Orchestration     │
-                                  │ • Stage & Commit (6 Files)│
-                                  │ • Push to Remote (origin) │
-                                  │ • Construct GitHub PR URL │
-                                  │ • Restore main Workspace  │
-                                  └───────────────────────────┘
+
+### 2.1 Inspection Engine Subsystem Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Orch as daroga.orchestrator
+    participant Scan as repository_scanner
+    participant AWS as ec2_inspector (Boto3)
+    participant CDP as browser_inspector (Playwright)
+    participant Compat as lambda_compatibility
+    participant RepGen as report_generator
+
+    Orch->>Scan: scan() -> Discovered files, entrypoints, ports, blockers
+    Scan-->>Orch: RepositoryScanResult
+    Orch->>AWS: inspect_all() -> Caller identity, instances, VPCs, SecGroups
+    AWS-->>Orch: AWSInspectionResult
+    Orch->>CDP: inspect() -> Query CDP socket :9222 for Console tabs
+    CDP-->>Orch: BrowserInspectionResult
+    Orch->>Compat: evaluate(repo, aws) -> Score & findings
+    Compat-->>Orch: CompatibilityResult
+    Orch->>RepGen: generate() -> Compile 23-section report
+    RepGen-->>Orch: EC2_TO_LAMBDA_MIGRATION_REPORT.md written
 ```
 
 ---
@@ -140,34 +120,25 @@ DAROGA is built upon three foundational tenets:
 
 DAROGA enforces strict safety invariants:
 
+```mermaid
+stateDiagram-v2
+    [*] --> CleanMain: Verify Working Tree Clean
+    CleanMain --> BranchCreated: Checkout lambda-migration-<timestamp>
+    BranchCreated --> ArtifactsGenerated: Audit & Code Generation
+    ArtifactsGenerated --> Committed: git add -A & git commit
+    Committed --> PushedRemote: git push -u origin <branch>
+    PushedRemote --> PRGenerated: Construct GitHub PR URL
+    PRGenerated --> CleanMainRestored: git checkout main
+    CleanMainRestored --> [*]: Workspace 100% Untouched
 ```
-[Start Session]
-       │
-       ▼
-git rev-parse --is-inside-work-tree
-       │
-       ▼
-git status --porcelain (Must be clean)
-       │
-       ▼
-Capture original_branch = git rev-parse --abbrev-ref HEAD
-       │
-       ▼
-git checkout -b lambda-migration-<timestamp>
-       │
-[Execute Audit & Generate Artifacts]
-       │
-       ▼
-git add -A && git commit -m "feat(aws-lambda): automated migration by DAROGA"
-       │
-       ▼
-git push -u origin lambda-migration-<timestamp>
-       │
-       ▼
-Construct PR URL: https://github.com/<owner>/<repo>/pull/new/<branch>
-       │
-       ▼
-git checkout <original_branch>
-       │
-[End Session: Base branch remains 100% untouched]
+
+### 4.1 Git Flow Transition Pipeline
+
+```mermaid
+flowchart LR
+    A["Original Branch (main)"] -->|"Checkout -b"| B["Isolated Branch (lambda-migration-*)"]
+    B -->|"Generate & Commit"| C["6 Deliverables Staged"]
+    C -->|"Push Remote"| D["Remote (origin)"]
+    D -->|"Output"| E["GitHub Pull Request Link"]
+    B -->|"Checkout main"| F["Original Branch (main) 100% Intact"]
 ```

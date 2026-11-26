@@ -44,40 +44,55 @@ DAROGA has one singular purpose: **Assess how the user's specific existing EC2-h
 
 ## 3. Core Architecture & Pipeline
 
+```mermaid
+flowchart TD
+    Repo["Target External Repository (Local Path)"] --> CleanCheck{"Git Status Clean?"}
+    CleanCheck -- "No" --> Abort["Halt: Uncommitted changes present"]
+    CleanCheck -- "Yes" --> Spawn["Spawn Feature Branch: lambda-migration-<timestamp>"]
+
+    subgraph Pipeline ["DAROGA 11-Stage Deterministic Pipeline"]
+        Spawn --> S1["1. Repository AST Scan (Go, Python, Node, Dockerfiles)"]
+        S1 --> S2["2. Live AWS Cloud Audit (Boto3 STS, EC2, VPC, SecGroups)"]
+        S2 --> S3["3. Browser CDP Console Check (Playwright :9222)"]
+        S3 --> S4["4. Lambda Compatibility & Limits Engine"]
+        S4 --> S5["5. Target Architecture Mapping (Graviton arm64 + API GW)"]
+        S5 --> S6["6. Comparative Cost Estimation (EC2 vs. Lambda Free Tier)"]
+        S6 --> S7["7. Generate 23-Section EC2_TO_LAMBDA_MIGRATION_REPORT.md"]
+        S7 --> S8["8. Synthesize Serverless Adapter (lambda_main.go / py / js)"]
+        S8 --> S9["9. Generate Linux ARM64 Build Script (build_lambda.sh)"]
+        S9 --> S10["10. Author AWS SAM Template (template.yaml)"]
+        S10 --> S11["11. Author Operator Guide (USER.md) & Executive Summary"]
+    end
+
+    subgraph GitFlow ["Git Automation & Zero Blast Radius"]
+        S11 --> Stage["Stage All 6 Deliverables"]
+        Stage --> Commit["Commit to Feature Branch"]
+        Commit --> Push["Push Feature Branch to Remote (origin)"]
+        Push --> PR["Construct Direct GitHub Pull Request URL"]
+        PR --> Restore["Restore Local Workspace to main (100% Untouched)"]
+    end
 ```
-[Target External Repository]
-            │
-            ▼
-[Git Cleanliness & Validation]
-            │
-            ▼
-[Spawn Isolated Feature Branch: lambda-migration-<timestamp>]
-            │
-┌───────────┴───────────────────────────────────────────────────────┐
-│                    DAROGA 11-STAGE AUDIT & SYNTHESIS              │
-│                                                                   │
-│  Stage 1: Repository AST Scan (Go, Python, Node, Dockerfiles)      │
-│  Stage 2: Live AWS Cloud Audit (Boto3 STS, EC2, VPC, SecGroups)   │
-│  Stage 3: Browser CDP Console Check (Playwright :9222)            │
-│  Stage 4: Lambda Compatibility & Execution Limits Engine          │
-│  Stage 5: Target Architecture Mapping (Graviton arm64 + API GW)  │
-│  Stage 6: Comparative Cost Estimation (EC2 vs. Lambda Free Tier)  │
-│  Stage 7: Generate 23-Section EC2_TO_LAMBDA_MIGRATION_REPORT.md   │
-│  Stage 8: Synthesize Serverless Adapter (lambda_main.go / py / js)│
-│  Stage 9: Generate Linux ARM64 Build Script (build_lambda.sh)     │
-│  Stage 10: Author AWS SAM Template (template.yaml)                │
-│  Stage 11: Author Operator Guide (USER.md) & Executive Summary    │
-└───────────┬───────────────────────────────────────────────────────┘
-            │
-┌───────────┴───────────────────────────────┐
-│         GIT AUTOMATION & ZERO BLAST       │
-│                                           │
-│  • Stage All 6 Deliverables               │
-│  • Commit to lambda-migration-<timestamp> │
-│  • Push Feature Branch to Remote (origin) │
-│  • Construct Direct GitHub PR URL         │
-│  • Restore Local Workspace to main        │
-└───────────────────────────────────────────┘
+
+### 3.1 Operator Review & Merge Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Operator as Cloud Operator / DevOps
+    participant CLI as DAROGA CLI
+    participant Repo as Local Git Repository
+    participant Remote as GitHub Remote (origin)
+    participant AWS as AWS Management Console
+
+    Operator->>CLI: Execute daroga /path/to/project
+    CLI->>Repo: Create & checkout lambda-migration-<timestamp>
+    CLI->>Repo: Generate report, serverless code, template.yaml, USER.md
+    CLI->>Repo: Stage & commit all 6 deliverables
+    CLI->>Remote: Push feature branch to origin
+    CLI->>Repo: Restore original branch (main)
+    CLI-->>Operator: Display GitHub PR URL & review instructions
+    Operator->>Remote: Review diff and merge Pull Request
+    Operator->>AWS: Follow USER.md to configure Console & deploy via SAM
 ```
 
 ---

@@ -16,6 +16,25 @@ DAROGA converts that application into **AWS Lambda Serverless**, which means:
 - **Automatic Instant Scaling**: Your service automatically scales up in milliseconds during high traffic and scales back down to zero.
 - **Safe & Non-Destructive**: DAROGA operates with a **Zero Blast Radius** guarantee. Your existing code on `main` and your live AWS servers are **100% untouched**. Everything is delivered on a separate review branch with a Pull Request.
 
+### Legacy EC2 vs. AWS Lambda Comparison
+
+```mermaid
+flowchart LR
+    subgraph Legacy ["Legacy EC2 Architecture"]
+        direction TB
+        VM["24/7 Running Virtual Machine"] --> Cost1["Billed continuously ($10-$100+/mo)"]
+        VM --> Maint1["Manual OS patches & SSH key management"]
+        VM --> Scale1["Slow scaling (minutes to launch AMI)"]
+    end
+
+    subgraph Serverless ["Migrated AWS Lambda Architecture"]
+        direction TB
+        Lambda["Event-Driven Serverless Compute"] --> Cost2["$0.00 when idle (1,000,000 Free Requests/mo)"]
+        Lambda --> Maint2["Zero server maintenance (100% managed by AWS)"]
+        Lambda --> Scale2["Sub-second automatic instant scaling"]
+    end
+```
+
 ---
 
 ## 2. Quick Setup (3 Minutes)
@@ -149,6 +168,23 @@ DAROGA will automatically read your open console pages and include live findings
 ---
 
 ## 5. What You Receive (Deliverables Explained Simply)
+
+```mermaid
+flowchart TD
+    Run["1. Run Single Command:<br/>daroga /path/to/project"] --> Inspect["2. DAROGA Audits Code, AWS & Console"]
+    Inspect --> Gen["3. DAROGA Generates 5 Deliverables"]
+    
+    subgraph Deliverables ["Generated Migration Deliverables"]
+        Gen --> D1["GitHub Pull Request Link (1-Click Merge)"]
+        Gen --> D2["USER.md (AWS Console Setup Instructions)"]
+        Gen --> D3["EC2_TO_LAMBDA_MIGRATION_REPORT.md (23-Section Audit)"]
+        Gen --> D4["template.yaml (Automated 1-Click SAM Deploy)"]
+        Gen --> D5["Serverless Adapters (lambda_main.go / py / js)"]
+    end
+
+    Deliverables --> Review["4. Your Team Reviews Pull Request & Merges"]
+    Review --> Live["5. Deploy to AWS & Enjoy 100% Free Idle Compute!"]
+```
 
 When DAROGA finishes, you receive 5 key deliverables:
 
