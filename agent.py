@@ -274,7 +274,12 @@ TOOLS = [
         {
             "verdict": {
                 "type": "string",
-                "enum": ["migrate", "partial", "do_not_migrate"],
+                "enum": [
+                    "migrate", "partial", "do_not_migrate",
+                    "MIGRATE", "PARTIAL", "DO_NOT_MIGRATE",
+                    "MIGRATE (WITH DECOUPLING)", "migrate (with decoupling)",
+                    "NOT RECOMMENDED", "not recommended",
+                ],
                 "description": "Architectural migration verdict",
             },
             "summary": {"type": "string", "description": "Executive summary of migration findings and actions"},
