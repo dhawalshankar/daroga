@@ -383,17 +383,20 @@ class UnifiedAIClient:
     def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
         if self.mode == "openai_compat":
-            # Context compaction: prune older tool outputs to strictly stay within free tier TPM limits
+            # Strict Context Compaction for 8,000 TPM rate limits (e.g. Groq free tier):
+            # Only retain latest tool output unclipped; prune older tool message bodies to <= 250 chars.
             tool_msg_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-            prune_set = set(tool_msg_indices[:-2]) if len(tool_msg_indices) > 2 else set()
+            prune_set = set(tool_msg_indices[:-1]) if len(tool_msg_indices) > 1 else set()
 
             cleaned_messages = []
             for i, m in enumerate(messages):
                 clean_m = {"role": m["role"]}
                 if m.get("content") is not None and m.get("content") != "":
                     text = str(m["content"])
-                    if i in prune_set and len(text) > 400:
-                        text = text[:400] + "... [earlier inspection truncated to preserve token limits]"
+                    if i in prune_set and len(text) > 250:
+                        text = text[:250] + "... [truncated to fit 8K TPM rate limit]"
+                    elif len(text) > 1500:
+                        text = text[:1500] + "... [truncated]"
                     clean_m["content"] = text
                 elif m["role"] == "assistant" and not m.get("tool_calls"):
                     clean_m["content"] = ""
@@ -413,7 +416,7 @@ class UnifiedAIClient:
                 tools=TOOLS,
                 tool_choice="auto",
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=2048,
             )
             choice = resp.choices[0].message
             norm_tools = []
@@ -550,7 +553,7 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     if os.environ.get("OPENAI_API_KEY"):
         return "openai", model_opt or "gpt-4o"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini", model_opt or "gemini-4-hydrogen"
+        return "gemini", model_opt or "gemini-2.0-flash"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic", model_opt or "claude-3-5-sonnet-20241022"
     if os.environ.get("XAI_API_KEY"):
@@ -558,10 +561,8 @@ def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tu
     if os.environ.get("OPENAI_BASE_URL"):
         return "custom", model_opt or "default"
 
-    # Default fallback
-    if os.environ.get("GROQ_API_KEY"):
-        return "groq", model_opt or "openai/gpt-oss-120b"
-    return "offline", "static-analysis-engine"
+    # Default to Groq
+    return "groq", model_opt or "openai/gpt-oss-120b"
 
 
 # ==============================================================================
@@ -1458,7 +1459,8 @@ Examples:
             target_model = "static-analysis-engine"
 
         ai_client = None
-        if provider_name not in ("offline", "heuristic") and not args.offline and args.model:
+        # Engage Online AI reasoning if not explicitly --offline
+        if provider_name not in ("offline", "heuristic") and not args.offline:
             try:
                 ai_client = UnifiedAIClient(
                     provider=provider_name,
