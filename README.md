@@ -4,10 +4,11 @@
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20Ready-FF9900.svg)](https://aws.amazon.com/lambda/)
 [![AWS SAM](https://img.shields.io/badge/AWS-SAM%20Validated-red.svg)](https://aws.amazon.com/serverless/sam/)
 [![Groq Fast Inference](https://img.shields.io/badge/LLM-Groq%20Tool%20Calling-orange.svg)](https://groq.com/)
+[![Cross-Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blueviolet.svg)]()
 [![Zero Blast Radius](https://img.shields.io/badge/Safety-Zero%20Blast%20Radius-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An enterprise-grade **autonomous AI agent CLI** that converts legacy EC2-hosted web services into production-ready AWS Lambda architectures. It analyzes existing application codebases at **any file path**, evaluates serverless feasibility, generates Lambda handlers and AWS SAM templates, self-validates through compiler/schema feedback loops, and publishes safe migration pull-requests on an isolated git branch.
+An enterprise-grade **autonomous AI agent CLI** (`aws-migrator`) that converts legacy EC2-hosted web services into production-ready AWS Lambda architectures. It analyzes existing application codebases at **any file path**, evaluates serverless feasibility, generates Lambda handlers and AWS SAM templates, self-validates through compiler/schema feedback loops, and publishes safe migration pull requests on an isolated git branch.
 
 In addition to technical migration artifacts, the agent autonomously generates **`USER.md`** inside the migrated repository — a step-by-step AWS Management Console guide detailing exactly what configurations, IAM roles, and environment variables to set on your AWS Dashboard to bring the service live.
 
@@ -16,6 +17,7 @@ In addition to technical migration artifacts, the agent autonomously generates *
 ## Table of Contents
 
 - [Zero File Copying: Work on Any External Repository](#zero-file-copying-work-on-any-external-repository)
+- [Repository Structure & Reference Projects](#repository-structure--reference-projects)
 - [Why an Autonomous Agent vs a Transpiler/Script?](#why-an-autonomous-agent-vs-a-transpiler-script)
 - [The Autonomous Decision Engine](#the-autonomous-decision-engine)
 - [Architecture & ReAct Workflow](#architecture--react-workflow)
@@ -23,7 +25,7 @@ In addition to technical migration artifacts, the agent autonomously generates *
 - [Installation & CLI Setup](#installation--cli-setup)
 - [CLI Reference & Usage](#cli-reference--usage)
 - [Generated Migration Artifacts (Including USER.md)](#generated-migration-artifacts)
-- [Real-World Verification Scenarios](#real-world-verification-scenarios)
+- [End-to-End Live Demonstration Walkthrough](#end-to-end-live-demonstration-walkthrough)
 - [Security Sandbox Specifications](#security-sandbox-specifications)
 
 ---
@@ -33,7 +35,7 @@ In addition to technical migration artifacts, the agent autonomously generates *
 You **never need to copy or move your project files** into this agent's folder. The CLI operates directly on any local repository path on your machine:
 
 ```bash
-# Point directly to your EC2 project located anywhere:
+# Point directly to your EC2 project located anywhere on your system:
 aws-migrator "C:\Users\username\Desktop\code\my-ec2-api" --push
 
 # Or on Linux / macOS:
@@ -48,6 +50,38 @@ aws-migrator /home/ubuntu/projects/billing-service --push
 5. **PR Link Generation**: Prints a direct 1-click GitHub / GitLab Pull Request URL.
 6. **Workspace Restoration**: Safely checks out your original working branch (`main` / `master`). **Your base code is 100% untouched.**
 7. **Actionable AWS Dashboard Guide**: You checkout the migration branch and open `USER.md` for a complete click-by-click AWS Console setup guide.
+
+---
+
+## Repository Structure & Reference Projects
+
+The repository includes two dedicated reference applications:
+
+```
+lambda-agent/
+├── README.md              # Complete system documentation
+├── agent.py               # Autonomous Migration Agent Engine
+├── aws-migrator           # Linux / macOS CLI executable
+├── aws-migrator.cmd       # Windows Command Prompt / PowerShell executable
+├── setup.py               # Package metadata and CLI entrypoints
+├── pyproject.toml         # Modern build configuration
+├── requirements.txt       # Dependencies
+├── docs/
+│   └── PRD.md             # Product Requirements Document
+├── ec2_app/               # Source project: Legacy EC2 Flask service
+│   ├── app.py
+│   └── requirements.txt
+└── lambda_app/            # Target architecture: Migrated AWS Lambda service
+    ├── app.py
+    ├── lambda_function.py
+    ├── template.yaml
+    ├── requirements.txt
+    ├── MIGRATION_REPORT.md
+    └── USER.md
+```
+
+- **`ec2_app/`**: A realistic legacy EC2 REST service running Flask with an active host/port listener (`app.run()`). Use this folder to run live end-to-end migration tests.
+- **`lambda_app/`**: The reference target architecture demonstrating the expected output artifacts produced by the agent.
 
 ---
 
@@ -160,6 +194,8 @@ pip install -e .
 
 *Note for Windows users:* The repository also includes `aws_migrator.cmd` and `aws-migrator.cmd` wrappers, so adding this directory to your system `PATH` allows you to type `aws_migrator` or `aws-migrator` from any terminal or PowerShell window.
 
+*Note for Linux/macOS users:* The bash wrappers `aws-migrator` and `aws_migrator` have the executable bit pre-configured (`chmod +x`).
+
 ### 2. Configure Your Groq API Key
 
 ```bash
@@ -193,23 +229,6 @@ python agent.py <path_to_repo> [options]
 | `--model <id>` | Groq model identifier | `openai/gpt-oss-120b` |
 | `--max-turns <n>` | Maximum autonomous decision loops | `30` |
 
-### Step-by-Step Practical Examples
-
-#### Example 1: Migrate an EC2 Project at Another Path
-```bash
-aws-migrator "C:\Users\dhawal\Desktop\projects\inventory-api" --push
-```
-
-#### Example 2: Run Without Pushing to Remote (Local Only)
-```bash
-aws-migrator "/home/ubuntu/apps/user-service" --no-push
-```
-
-#### Example 3: Use a Custom LLM Model
-```bash
-aws-migrator "/path/to/project" --model llama-3.3-70b-versatile
-```
-
 ---
 
 ## Generated Migration Artifacts
@@ -218,44 +237,13 @@ When a service is migrated, the agent generates:
 
 ### 1. `USER.md` (The Actionable AWS Dashboard Guide)
 This file is generated specifically for the human developer. It translates code changes into clear, click-by-click instructions for the **AWS Management Console**:
-
-```markdown
-# AWS Console Deployment & Configuration Guide
-
-### Step 1: Deploy the Code
-Option A (Fastest via CLI):
-$ sam build
-$ sam deploy --guided
-
-Option B (AWS Lambda Console Manual Upload):
-1. Package dependencies: pip install -r requirements.txt -t .
-2. Zip app files and upload via AWS Lambda Console -> Code -> Upload from -> .zip file.
-
-### Step 2: Configure Lambda Settings
-- Runtime: Python 3.11
-- Handler: lambda_function.lambda_handler
-- Memory: 512 MB
-- Timeout: 30 seconds
-
-### Step 3: Inject Environment Variables
-Go to Configuration -> Environment variables -> Edit:
-- DATABASE_URL = <your_rds_connection_string>
-- SECRET_KEY = <your_secret_key>
-
-### Step 4: IAM Execution Role & Permissions
-Go to Configuration -> Permissions:
-- Ensure 'AWSLambdaBasicExecutionRole' is attached for CloudWatch Logs.
-- Attach 'AWSLambdaVPCAccessExecutionRole' if connecting to RDS inside a private VPC.
-
-### Step 5: API Gateway HTTP Trigger
-Go to Function Overview -> Add trigger -> API Gateway:
-- Trigger type: Create an API -> HTTP API
-- Security: Open (or JWT Authorizer)
-- Note the generated HTTP API endpoint URL!
-
-### Step 6: Test from Console
-Under the 'Test' tab, paste the sample API Gateway v2 test payload and verify HTTP 200 OK.
-```
+- Step 1: Automated deployment via `sam build && sam deploy --guided` or manual `.zip` packaging.
+- Step 2: Function runtime and handler configuration (`lambda_function.lambda_handler`).
+- Step 3: Environment variable injection under *Configuration -> Environment variables*.
+- Step 4: IAM Execution Role attachment (`AWSLambdaBasicExecutionRole` & VPC access).
+- Step 5: API Gateway HTTP API ingress trigger creation.
+- Step 6: Console Test event payload verification.
+- Step 7: CloudWatch log inspection.
 
 ### 2. `lambda_function.py`
 The production AWS Lambda entrypoint bridging API Gateway events to your web framework:
@@ -272,31 +260,7 @@ lambda_handler = make_lambda_handler(app)
 ```
 
 ### 3. `template.yaml` (AWS Serverless Application Model)
-Infrastructure as Code defining the Lambda function, IAM roles, memory, timeout, and API Gateway integration:
-```yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Automated AWS Lambda Serverless Migration
-
-Globals:
-  Function:
-    Timeout: 30
-    MemorySize: 512
-    Runtime: python3.11
-
-Resources:
-  ApiFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: lambda_function.lambda_handler
-      CodeUri: .
-      Events:
-        ApiRoot:
-          Type: HttpApi
-          Properties:
-            Path: /{proxy+}
-            Method: ANY
-```
+Infrastructure as Code defining the Lambda function, IAM roles, memory, timeout, and API Gateway integration.
 
 ### 4. `MIGRATION_REPORT.md`
 A technical architecture report detailing:
@@ -306,40 +270,39 @@ A technical architecture report detailing:
 
 ---
 
-## Real-World Verification Scenarios
+## End-to-End Live Demonstration Walkthrough
 
-### Scenario A: Stateless Flask Service (`sample_app`)
+To demonstrate the agent live to an interviewer or panel:
 
+### Step 1: Inspect the Source Project (`ec2_app`)
+Open `ec2_app/app.py` and show that it is a standard legacy Flask API listening on a network port:
 ```bash
-aws-migrator sample_app --push
+cd ec2_app
+git status    # Clean working tree
+cat app.py    # Shows app.run(host="0.0.0.0", port=port)
+cd ..
 ```
 
-**Agent Behavior:**
-1. Discovers `app.py` and detects Flask route definitions (`/health`, `/tasks`).
-2. Confirms request-response statelessness (no background loops or disk locks).
-3. Issues Verdict: `MIGRATE`.
-4. Generates `lambda_function.py` utilizing `apig-wsgi` for zero-overhead WSGI dispatch.
-5. Generates `template.yaml` (AWS SAM) with API Gateway HttpApi events.
-6. Generates `USER.md` with complete AWS Console setup steps.
-7. Validates code syntax via `python -m py_compile lambda_function.py`.
-8. Commits changes and pushes to `origin/lambda-migration-<timestamp>`.
-
----
-
-### Scenario B: Stateful Daemon Service (`sample_bad_app`)
-
+### Step 2: Run the Autonomous Migration CLI
 ```bash
-aws-migrator sample_bad_app --no-push
+aws-migrator ec2_app --push
 ```
 
-**Agent Behavior:**
-1. Discovers `threading.Thread` with an infinite daemon worker.
-2. Identifies local disk SQLite file writes (`local_state.db`).
-3. Autonomous Decision: **Rejects blind conversion** and issues Verdict: `DO_NOT_MIGRATE`.
-4. Generates `MIGRATION_REPORT.md` and `USER.md` explaining:
-   - Why continuous daemon threads freeze on AWS Lambda.
-   - Step-by-step AWS Console instructions to deploy on **AWS ECS Fargate** instead.
-5. Does not generate broken Lambda handlers.
+### Step 3: Observe Real-Time Agent Execution
+1. **ReAct Reasoning Loop**: The agent observes directory topology, reads `app.py` and `requirements.txt`, and formulates its migration plan.
+2. **Autonomous Verdict**: Evaluates that `ec2_app` is stateless and assigns Verdict: `MIGRATE`.
+3. **Artifact Generation**: Writes `lambda_function.py`, `template.yaml`, `MIGRATION_REPORT.md`, and `USER.md`.
+4. **Closed-Loop Validation**: Runs `python -m py_compile` to self-validate syntax.
+5. **Git Push & Zero Blast Radius**: Commits the changes to `lambda-migration-<timestamp>`, pushes to `origin`, outputs the Pull Request URL, and checks out `main` cleanly.
+
+### Step 4: Review the Migrated Code and Operator Guide
+```bash
+cd ec2_app
+git checkout lambda-migration-<timestamp>
+ls -la
+# View the generated handler and the operator guide
+cat USER.md
+```
 
 ---
 

@@ -1,0 +1,70 @@
+# AWS Management Console Operator Guide
+
+This step-by-step manual outlines the actions required in the AWS Management Console to bring this migrated service into active production.
+
+---
+
+### Step 1: Deploy Infrastructure
+
+#### Option A: Automated Deployment via AWS SAM CLI (Recommended)
+From your terminal, execute:
+```bash
+sam build
+sam deploy --guided
+```
+Follow the interactive prompts to name your stack (e.g. `task-api-service`) and confirm IAM role creation.
+
+#### Option B: Manual Packaging via AWS Lambda Console
+1. Package dependencies locally:
+   ```bash
+   pip install -r requirements.txt -t .
+   ```
+2. Create a zip archive containing `app.py`, `lambda_function.py`, and the installed site-packages.
+3. Open the **AWS Lambda Console** -> Functions -> **Create function**.
+4. Set Function Name to `task-api-service` and Runtime to **Python 3.11**.
+5. Upload the `.zip` archive under the **Code** tab.
+
+---
+
+### Step 2: Runtime Configuration
+Navigate to **Configuration** -> **General configuration** -> **Edit**:
+- **Handler**: `lambda_function.lambda_handler`
+- **Memory**: `512 MB`
+- **Timeout**: `30 sec`
+
+---
+
+### Step 3: Configure Environment Variables
+Under **Configuration** -> **Environment variables** -> **Edit**:
+- Add required application variables (e.g., `APP_ENV=production`).
+
+---
+
+### Step 4: IAM Execution Role & Permissions
+Navigate to **Configuration** -> **Permissions**:
+- Confirm that `AWSLambdaBasicExecutionRole` is attached (provides CloudWatch logging access).
+- If database connectivity within a VPC is required, attach `AWSLambdaVPCAccessExecutionRole`.
+
+---
+
+### Step 5: Configure API Gateway Ingress Trigger
+1. In the **Function overview** section, click **Add trigger**.
+2. Select **API Gateway**.
+3. Under API type, select **Create an API** -> **HTTP API**.
+4. Security: **Open** (or configure a JWT / IAM authorizer).
+5. Click **Add**.
+6. The console will display your live **API endpoint URL** (e.g. `https://xxxxxx.execute-api.us-east-1.amazonaws.com`).
+
+---
+
+### Step 6: Verify Deployment via Console Test Tab
+1. Select the **Test** tab in the Lambda Console.
+2. Select the **Amazon API Gateway HTTP API (Payload V2)** template.
+3. Set `"rawPath": "/health"` and `"requestContext.http.method": "GET"`.
+4. Click **Test** and verify a status `200 OK` response with `{"status": "healthy", "compute": "AWS Lambda"}`.
+
+---
+
+### Step 7: Monitoring and Observability
+Navigate to the **Monitor** tab:
+- Click **View CloudWatch logs** to inspect real-time application logs, invocation metrics, and cold-start latency.

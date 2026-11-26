@@ -557,8 +557,13 @@ Examples:
         sys.exit(1)
 
     if not (repo_path / ".git").exists():
-        log_error(f"Target path '{repo_path}' is not a Git repository. Please run 'git init' and commit initial code.")
-        sys.exit(1)
+        check_git = run_git(repo_path, "rev-parse", "--is-inside-work-tree", check=False)
+        if check_git.returncode != 0:
+            log_step("GIT", f"Target directory '{repo_path.name}' is not a Git repo. Initializing Git repository automatically...")
+            run_git(repo_path, "init")
+            run_git(repo_path, "add", "-A")
+            run_git(repo_path, "commit", "-m", "chore: initial commit before Lambda migration")
+            log_success(f"Initialized Git repository in '{repo_path.name}'.")
 
     if not is_git_clean(repo_path):
         log_error(
