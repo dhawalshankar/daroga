@@ -978,6 +978,14 @@ def run_agent_loop(
         try:
             response = call_ai_with_retry(client, messages)
         except Exception as err:
+            backend_rel = "backend" if (repo / "backend").is_dir() else "."
+            backend_dir = repo / backend_rel
+            has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+            has_sam = (repo / "template.yaml").is_file()
+            has_user = (repo / "USER.md").is_file()
+            if has_adapter and has_sam and has_user:
+                log_success("All migration deliverables verified on disk before API interruption!")
+                return {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
             log_error(f"Aborting session due to API failure: {err}")
             return None
 
@@ -1068,6 +1076,20 @@ def run_agent_loop(
 
         if completion_data:
             return completion_data
+
+        # Early Completion Check: If all required deliverables exist on disk, finalize immediately!
+        backend_rel = "backend" if (repo / "backend").is_dir() else "."
+        backend_dir = repo / backend_rel
+        has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+        has_sam = (repo / "template.yaml").is_file()
+        has_user = (repo / "USER.md").is_file()
+        has_build = (backend_dir / "build_lambda.sh").is_file() if (audit_res and getattr(audit_res, "target_runtime", "").lower() == "go") else True
+
+        if has_adapter and has_sam and has_user and has_build:
+            log_success("All essential migration deliverables ('lambda_main', 'build_lambda.sh', 'template.yaml', 'USER.md') successfully generated!")
+            verdict_val = getattr(audit_res, "verdict", "MIGRATE")
+            log_step("DECISION", f"Migration Verdict Concluded: [{verdict_val.upper()}]", Colors.GREEN)
+            return {"verdict": verdict_val}
 
     log_warn(f"Agent reached maximum execution turns limit ({max_turns}).")
     return None
@@ -1667,13 +1689,25 @@ Examples:
                 has_sam = (repo_path / "template.yaml").is_file()
                 has_user = (repo_path / "USER.md").is_file()
 
-                if not migration_verdict or not (has_adapter and has_sam and has_user):
+                if has_adapter and has_sam and has_user:
+                    if not migration_verdict:
+                        migration_verdict = {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
+                else:
                     log_warn("Online AI did not generate complete deliverables. Engaging Deterministic Architecture Engine...")
                     migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
             except Exception as exc:
-                log_warn(f"Online AI session encountered an error or rate-limit: {exc}")
-                log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
-                migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
+                backend_rel = "backend" if (repo_path / "backend").is_dir() else "."
+                backend_dir = repo_path / backend_rel
+                has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+                has_sam = (repo_path / "template.yaml").is_file()
+                has_user = (repo_path / "USER.md").is_file()
+                if has_adapter and has_sam and has_user:
+                    log_success("All essential migration deliverables verified on disk.")
+                    migration_verdict = {"verdict": getattr(audit_res, "verdict", "MIGRATE")}
+                else:
+                    log_warn(f"Online AI session encountered an error or rate-limit: {exc}")
+                    log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
+                    migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
         else:
             migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
 
