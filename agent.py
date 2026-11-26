@@ -174,6 +174,11 @@ DIRECTORY & REPOSITORY SCOPE:
   * The backend API server is what ran on the EC2 VM and is what belongs on AWS Lambda.
 - Never inspect or touch frontend UI assets, page components, or build bundles.
 
+EFFICIENCY & PAGING RULE (PREVENT TOKEN LIMITS):
+- DO NOT read entire large files or paginate through hundreds of lines!
+- Inspecting the first 100-200 lines of `main.go` or `app.py` is sufficient to identify the HTTP router and entrypoint.
+- Call `read_file` at most 1 or 2 times. Once you see the router, immediately proceed to generating `backend/lambda_main.go`, `template.yaml`, `MIGRATION_REPORT.md`, and `USER.md`!
+
 FROM EC2 VM TO AWS LAMBDA (WHAT CHANGES):
 - On EC2, the service ran as a continuous process listening on a TCP port (`http.ListenAndServe`, `app.run`, etc.).
 - In AWS Lambda, continuous sockets are replaced by an event-driven AWS API Gateway trigger invoking the Lambda handler.
@@ -358,12 +363,18 @@ class UnifiedAIClient:
     def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
         """Dispatches chat completion to the configured provider and normalizes response."""
         if self.mode == "openai_compat":
-            # Sanitize messages for OpenAI / Gemini / xAI compatibility
+            # Context compaction: prune older tool outputs to strictly stay within free tier TPM limits
+            tool_msg_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+            prune_set = set(tool_msg_indices[:-2]) if len(tool_msg_indices) > 2 else set()
+
             cleaned_messages = []
-            for m in messages:
+            for i, m in enumerate(messages):
                 clean_m = {"role": m["role"]}
                 if m.get("content") is not None and m.get("content") != "":
-                    clean_m["content"] = str(m["content"])
+                    text = str(m["content"])
+                    if i in prune_set and len(text) > 400:
+                        text = text[:400] + "... [earlier inspection truncated to preserve token limits]"
+                    clean_m["content"] = text
                 elif m["role"] == "assistant" and not m.get("tool_calls"):
                     clean_m["content"] = ""
 
