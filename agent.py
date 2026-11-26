@@ -180,10 +180,19 @@ DIRECTORY & REPOSITORY SCOPE:
   * The backend API server is what ran on the EC2 VM and is what belongs on AWS Lambda.
 - Never inspect or touch frontend UI assets, page components, or build bundles.
 
-EFFICIENCY & PAGING RULE (PREVENT TOKEN LIMITS):
-- DO NOT read entire large files or paginate through hundreds of lines!
-- Inspecting the first 100-200 lines of `main.go` or `app.py` is sufficient to identify the HTTP router and entrypoint.
-- Call `read_file` at most 1 or 2 times. Once you see the router, immediately proceed to generating `backend/lambda_main.go`, `template.yaml`, `MIGRATION_REPORT.md`, and `USER.md`!
+EFFICIENCY & FAST GENERATION PROTOCOL (STRICT):
+- DO NOT read entire large files or loop through `read_file` or `search` calls!
+- You have at most 2 turns for inspection:
+  * Turn 1: `read_file` on `backend/main.go` or `backend/app.py` (first 100-200 lines only).
+  * Turn 2 onwards: IMMEDIATELY start generating artifacts using `write_file`!
+- REQUIRED DELIVERABLES YOU MUST WRITE IN ORDER:
+  1. `write_file`: Serverless adapter (`backend/lambda_main.go` for Go, `lambda_function.py` for Python, `lambda.js` for Node.js).
+  2. `write_file`: Build script if Go (`backend/build_lambda.sh`).
+  3. `write_file`: AWS SAM Template (`template.yaml`).
+  4. `write_file`: AWS Console Operator Guide (`USER.md`).
+- ONCE THOSE FILES ARE WRITTEN:
+  Immediately call `finish` with `{"verdict": "migrate", "summary": "..."}`!
+- Do NOT search for lines or wander through the codebase. You already know the architecture from Phase 1 audit. Generate the deliverables immediately!
 
 FROM EC2 VM TO AWS LAMBDA (WHAT CHANGES):
 - On EC2, the service ran as a continuous process listening on a TCP port (`http.ListenAndServe`, `app.run`, etc.).
@@ -1470,6 +1479,17 @@ Examples:
                 )
                 log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
                 migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
+                
+                # Check that essential artifacts were actually written
+                backend_rel = "backend" if (repo_path / "backend").is_dir() else "."
+                backend_dir = repo_path / backend_rel
+                has_adapter = (backend_dir / "lambda_main.go").is_file() or (backend_dir / "lambda_function.py").is_file() or (backend_dir / "lambda.js").is_file()
+                has_sam = (repo_path / "template.yaml").is_file()
+                has_user = (repo_path / "USER.md").is_file()
+
+                if not migration_verdict or not (has_adapter and has_sam and has_user):
+                    log_warn("Online AI did not generate complete deliverables. Engaging Deterministic Architecture Engine...")
+                    migration_verdict = run_offline_analysis(repo_path, audit_res=audit_res)
             except Exception as exc:
                 log_warn(f"Online AI session encountered an error or rate-limit: {exc}")
                 log_step("AGENT", "Engaging Autonomous Heuristic Architecture Engine as smart failover...", Colors.YELLOW)
