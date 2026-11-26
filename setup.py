@@ -7,6 +7,8 @@ setup(
     py_modules=["agent"],
     install_requires=[
         "groq>=0.11.0",
+        "openai>=1.0.0",
+        "anthropic>=0.20.0",
     ],
     entry_points={
         "console_scripts": [

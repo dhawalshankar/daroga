@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![AWS Lambda](https://img.shields.io/badge/AWS-Lambda%20Ready-FF9900.svg)](https://aws.amazon.com/lambda/)
 [![AWS SAM](https://img.shields.io/badge/AWS-SAM%20Validated-red.svg)](https://aws.amazon.com/serverless/sam/)
-[![Groq Fast Inference](https://img.shields.io/badge/LLM-Groq%20Tool%20Calling-orange.svg)](https://groq.com/)
+[![Multi-LLM Support](https://img.shields.io/badge/LLM-Groq%20%7C%20OpenAI%20%7C%20Gemini%20%7C%20Claude%20%7C%20xAI-orange.svg)]()
 [![Cross-Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blueviolet.svg)]()
 [![Zero Blast Radius](https://img.shields.io/badge/Safety-Zero%20Blast%20Radius-brightgreen.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -177,7 +177,7 @@ The agent uses the **ReAct (Reason + Act)** paradigm over an isolated Git worksp
 ### Prerequisites
 - **Python**: 3.10 or higher
 - **Git**: Installed and accessible in your system `PATH`
-- **Groq API Key**: Fast inference engine key ([Obtain from Groq Console](https://console.groq.com))
+- **AI API Key**: Any supported provider key (Groq, OpenAI, Google Gemini, Anthropic Claude, or xAI)
 - **AWS SAM CLI** *(Optional, recommended)*: Enables automated template validation (`sam validate`)
 
 ### 1. One-Time Setup
@@ -196,15 +196,31 @@ pip install -e .
 
 *Note for Linux/macOS users:* The bash wrappers `aws-migrator` and `aws_migrator` have the executable bit pre-configured (`chmod +x`).
 
-### 2. Configure Your Groq API Key
+### 2. Configure Your AI Provider API Key
+
+Set the environment variable for your preferred AI provider:
 
 ```bash
-# Linux / macOS:
-export GROQ_API_KEY="gsk_your_api_key_here"
+# Groq (Default / Ultra-Fast):
+export GROQ_API_KEY="gsk_..."
 
-# Windows (PowerShell):
-$env:GROQ_API_KEY="gsk_your_api_key_here"
+# OpenAI (ChatGPT: gpt-4o, o1, o3-mini):
+export OPENAI_API_KEY="sk-..."
+
+# Google Gemini (gemini-2.0-flash, gemini-1.5-pro):
+export GEMINI_API_KEY="AIzaSy..."  # or GOOGLE_API_KEY
+
+# Anthropic Claude (claude-3-5-sonnet, claude-3-5-haiku):
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# xAI (Grok-2, Grok-beta):
+export XAI_API_KEY="xai-..."
+
+# Custom / Local (Ollama, DeepSeek, vLLM, OpenRouter):
+export OPENAI_BASE_URL="http://localhost:11434/v1"
 ```
+
+*(On Windows PowerShell, use `$env:KEY_NAME="value"`).*
 
 ---
 
@@ -223,11 +239,36 @@ python agent.py <path_to_repo> [options]
 | Flag | Description | Default |
 |---|---|---|
 | `repo` | Path to the target Git repository (relative or absolute) | *Required* |
+| `--provider` | AI model provider: `auto`, `groq`, `openai`, `gemini`, `claude`, `xai`, `custom` | `auto` (auto-detects from key/model) |
+| `--model` | Target model identifier (e.g. `gpt-4o`, `gemini-2.0-flash`, `claude-3-5-sonnet-20241022`, `grok-2-latest`, `llama-3.3-70b-versatile`) | *Auto per provider* |
+| `--api-key` | Optional direct API key override (overrides environment variable) | `None` |
+| `--base-url` | Custom base URL for OpenAI-compatible endpoints (Ollama, DeepSeek, OpenRouter) | `None` |
 | `--push` | Push the migration feature branch to the remote git repository | `True` (if remote exists) |
 | `--no-push` | Do NOT push the migration branch; keep all changes strictly local | `False` |
 | `--remote <name>` | Git remote name to push to | `origin` |
-| `--model <id>` | Groq model identifier | `openai/gpt-oss-120b` |
 | `--max-turns <n>` | Maximum autonomous decision loops | `30` |
+
+### Provider Usage Examples
+
+```bash
+# 1. Automatic: Uses whatever API key is exported in your environment
+aws-migrator /path/to/my-ec2-app --push
+
+# 2. Use OpenAI ChatGPT (gpt-4o):
+aws-migrator /path/to/my-ec2-app --provider openai --model gpt-4o
+
+# 3. Use Google Gemini (gemini-2.0-flash):
+aws-migrator /path/to/my-ec2-app --provider gemini --model gemini-2.0-flash
+
+# 4. Use Anthropic Claude (claude-3-5-sonnet):
+aws-migrator /path/to/my-ec2-app --provider claude --model claude-3-5-sonnet-20241022
+
+# 5. Use xAI Grok (grok-2-latest):
+aws-migrator /path/to/my-ec2-app --provider xai --model grok-2-latest
+
+# 6. Use Local Ollama or DeepSeek via custom endpoint:
+aws-migrator /path/to/my-ec2-app --provider custom --base-url "http://localhost:11434/v1" --model deepseek-r1
+```
 
 ---
 

@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
-Autonomous EC2 to AWS Lambda Migration Agent
-============================================
+Autonomous EC2 to AWS Lambda Migration Agent CLI
+================================================
 An enterprise-grade, autonomous AI agent that analyzes legacy EC2-hosted applications,
 evaluates serverless architectural suitability, generates AWS Lambda entrypoints and SAM infrastructure,
 self-validates code through compiler/schema feedback loops, and publishes safe migration pull-requests
 on an isolated remote git branch.
+
+Multi-Provider AI Engine:
+- Groq (default / ultra-fast inference)
+- OpenAI (ChatGPT: gpt-4o, o1, o3-mini)
+- Google Gemini (gemini-2.0-flash, gemini-1.5-pro)
+- Anthropic Claude (claude-3-5-sonnet, claude-3-5-haiku)
+- xAI (grok-2, grok-beta)
+- Custom / Local OpenAI-compatible endpoints (Ollama, DeepSeek, vLLM, OpenRouter)
 
 Zero Blast Radius:
 - The base/main branch is NEVER modified or committed to directly.
@@ -14,8 +22,7 @@ Zero Blast Radius:
 - The working copy is safely restored to the original branch upon completion.
 
 Usage:
-    export GROQ_API_KEY="gsk_..."
-    python agent.py /path/to/repo [--push] [--remote origin] [--model MODEL]
+    aws-migrator /path/to/repo [--provider auto|groq|openai|gemini|claude|xai|custom] [--model MODEL] [--push]
 """
 
 import argparse
@@ -32,7 +39,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from groq import BadRequestError, Groq, RateLimitError
+# Multi-provider client imports with graceful fallbacks
+try:
+    from groq import Groq, RateLimitError as GroqRateLimitError, BadRequestError as GroqBadRequestError
+except ImportError:
+    Groq = None
+    GroqRateLimitError = Exception
+    GroqBadRequestError = Exception
+
+try:
+    from openai import OpenAI, RateLimitError as OpenAIRateLimitError, BadRequestError as OpenAIBadRequestError
+except ImportError:
+    OpenAI = None
+    OpenAIRateLimitError = Exception
+    OpenAIBadRequestError = Exception
+
+try:
+    from anthropic import Anthropic, RateLimitError as AnthropicRateLimitError, BadRequestError as AnthropicBadRequestError
+except ImportError:
+    Anthropic = None
+    AnthropicRateLimitError = Exception
+    AnthropicBadRequestError = Exception
+
 
 # ==============================================================================
 # OS-Agnostic Terminal UI & Formatting
@@ -51,6 +79,7 @@ def init_terminal_colors():
             pass
 
 init_terminal_colors()
+
 
 class Colors:
     HEADER = "\033[95m"
@@ -108,7 +137,6 @@ def log_error(message: str):
 # ==============================================================================
 # Configuration & Constants
 # ==============================================================================
-DEFAULT_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 DEFAULT_MAX_TURNS = 30
 DEFAULT_TIMEOUT_SEC = 120
 
@@ -126,7 +154,6 @@ BLOCKED_COMMAND_KEYWORDS = (
     "push", "merge", "deploy", "aws", "apply", "sudo", "rm", "curl", "wget", "git",
 )
 
-# System Prompt guiding the Autonomous Migration Reasoning Loop
 SYSTEM_PROMPT = """You are an Autonomous Cloud Migration Agent specializing in converting EC2-hosted services into production-ready AWS Lambda serverless architectures.
 
 OPERATING CONTEXT:
@@ -241,6 +268,238 @@ TOOLS = [
     ),
 ]
 
+
+# ==============================================================================
+# Multi-Provider Unified AI Engine
+# ==============================================================================
+class NormalizedToolCall:
+    def __init__(self, call_id: str, name: str, arguments: str):
+        self.id = call_id
+        self.type = "function"
+        self.function = type("FunctionObj", (), {"name": name, "arguments": arguments})()
+
+
+class NormalizedMessage:
+    def __init__(self, content: Optional[str], tool_calls: Optional[List[NormalizedToolCall]] = None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class NormalizedResponse:
+    def __init__(self, message: NormalizedMessage):
+        self.choices = [type("ChoiceObj", (), {"message": message})()]
+
+
+class UnifiedAIClient:
+    """
+    Unified client supporting Groq, OpenAI (ChatGPT), Google Gemini,
+    Anthropic Claude, xAI (Grok), and custom OpenAI-compatible endpoints.
+    """
+    def __init__(self, provider: str, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        self.provider = provider.lower()
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+        self._init_backend()
+
+    def _init_backend(self):
+        if self.provider == "anthropic" or self.provider == "claude":
+            if Anthropic is None:
+                raise ImportError("Anthropic SDK is not installed. Please run: pip install anthropic")
+            key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
+            if not key:
+                raise ValueError("Anthropic API key missing. Please export ANTHROPIC_API_KEY.")
+            self.anthropic_client = Anthropic(api_key=key)
+            self.mode = "anthropic"
+
+        elif self.provider == "groq":
+            if Groq is None and OpenAI is None:
+                raise ImportError("Neither 'groq' nor 'openai' library is installed. Run: pip install groq openai")
+            key = self.api_key or os.environ.get("GROQ_API_KEY")
+            if not key:
+                raise ValueError("Groq API key missing. Please export GROQ_API_KEY.")
+            if Groq is not None:
+                self.openai_client = Groq(api_key=key)
+            else:
+                self.openai_client = OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
+            self.mode = "openai_compat"
+
+        elif self.provider == "gemini":
+            if OpenAI is None:
+                raise ImportError("OpenAI SDK is required to connect to Gemini endpoint. Run: pip install openai")
+            key = self.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            if not key:
+                raise ValueError("Gemini API key missing. Please export GEMINI_API_KEY or GOOGLE_API_KEY.")
+            base = self.base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
+            self.openai_client = OpenAI(api_key=key, base_url=base)
+            self.mode = "openai_compat"
+
+        elif self.provider == "xai":
+            if OpenAI is None:
+                raise ImportError("OpenAI SDK is required to connect to xAI endpoint. Run: pip install openai")
+            key = self.api_key or os.environ.get("XAI_API_KEY")
+            if not key:
+                raise ValueError("xAI API key missing. Please export XAI_API_KEY.")
+            base = self.base_url or "https://api.x.ai/v1"
+            self.openai_client = OpenAI(api_key=key, base_url=base)
+            self.mode = "openai_compat"
+
+        elif self.provider == "openai":
+            if OpenAI is None:
+                raise ImportError("OpenAI SDK is required. Run: pip install openai")
+            key = self.api_key or os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise ValueError("OpenAI API key missing. Please export OPENAI_API_KEY.")
+            self.openai_client = OpenAI(api_key=key)
+            self.mode = "openai_compat"
+
+        elif self.provider == "custom":
+            if OpenAI is None:
+                raise ImportError("OpenAI SDK is required. Run: pip install openai")
+            key = self.api_key or os.environ.get("OPENAI_API_KEY", "custom_key")
+            base = self.base_url or os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1")
+            self.openai_client = OpenAI(api_key=key, base_url=base)
+            self.mode = "openai_compat"
+        else:
+            raise ValueError(f"Unsupported provider: '{self.provider}'. Supported: groq, openai, gemini, claude, xai, custom")
+
+    def chat_completion(self, messages: List[Dict[str, Any]]) -> NormalizedResponse:
+        """Dispatches chat completion to the configured provider and normalizes response."""
+        if self.mode == "openai_compat":
+            resp = self.openai_client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                temperature=0.1,
+                max_tokens=4096,
+            )
+            choice = resp.choices[0].message
+            norm_tools = []
+            if choice.tool_calls:
+                for tc in choice.tool_calls:
+                    norm_tools.append(NormalizedToolCall(tc.id, tc.function.name, tc.function.arguments))
+            return NormalizedResponse(NormalizedMessage(content=choice.content, tool_calls=norm_tools))
+
+        elif self.mode == "anthropic":
+            system_prompt = SYSTEM_PROMPT
+            anthropic_messages = []
+            for m in messages:
+                role = m.get("role")
+                if role == "system":
+                    system_prompt = m.get("content", SYSTEM_PROMPT)
+                elif role == "user":
+                    anthropic_messages.append({"role": "user", "content": m.get("content", "")})
+                elif role == "assistant":
+                    content_blocks = []
+                    if m.get("content"):
+                        content_blocks.append({"type": "text", "text": m["content"]})
+                    for tc in m.get("tool_calls", []):
+                        try:
+                            fn_args = json.loads(tc["function"]["arguments"] or "{}")
+                        except Exception:
+                            fn_args = {}
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "input": fn_args,
+                        })
+                    anthropic_messages.append({"role": "assistant", "content": content_blocks or "..."})
+                elif role == "tool":
+                    anthropic_messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": m.get("tool_call_id", ""),
+                            "content": str(m.get("content", "")),
+                        }],
+                    })
+
+            anthropic_tools = [
+                {
+                    "name": t["function"]["name"],
+                    "description": t["function"]["description"],
+                    "input_schema": t["function"]["parameters"],
+                }
+                for t in TOOLS
+            ]
+
+            resp = self.anthropic_client.messages.create(
+                model=self.model,
+                system=system_prompt,
+                messages=anthropic_messages,
+                tools=anthropic_tools,
+                max_tokens=4096,
+                temperature=0.1,
+            )
+
+            text_content = ""
+            norm_tools = []
+            for block in resp.content:
+                if block.type == "text":
+                    text_content += block.text
+                elif block.type == "tool_use":
+                    norm_tools.append(NormalizedToolCall(
+                        call_id=block.id,
+                        name=block.name,
+                        arguments=json.dumps(block.input, ensure_ascii=False),
+                    ))
+            return NormalizedResponse(NormalizedMessage(content=text_content or None, tool_calls=norm_tools))
+
+
+def detect_provider_and_model(provider_opt: str, model_opt: Optional[str]) -> Tuple[str, str]:
+    """
+    Resolves the target provider and model based on CLI options and environment keys.
+    """
+    p = (provider_opt or "auto").lower()
+
+    # Explicit provider specified
+    if p != "auto":
+        default_models = {
+            "groq": "llama-3.3-70b-versatile",
+            "openai": "gpt-4o",
+            "gemini": "gemini-2.0-flash",
+            "claude": "claude-3-5-sonnet-20241022",
+            "anthropic": "claude-3-5-sonnet-20241022",
+            "xai": "grok-2-latest",
+            "custom": "default",
+        }
+        model = model_opt or default_models.get(p, "gpt-4o")
+        return p, model
+
+    # Auto-detection from model name if provided
+    if model_opt:
+        m = model_opt.lower()
+        if "claude" in m:
+            return "anthropic", model_opt
+        if "gemini" in m:
+            return "gemini", model_opt
+        if "gpt" in m or m.startswith(("o1", "o3")):
+            return "openai", model_opt
+        if "grok" in m:
+            return "xai", model_opt
+        if "llama" in m or "mixtral" in m or m.startswith("openai/"):
+            return "groq", model_opt
+
+    # Auto-detection from environment variables
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq", model_opt or "llama-3.3-70b-versatile"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai", model_opt or "gpt-4o"
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini", model_opt or "gemini-2.0-flash"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic", model_opt or "claude-3-5-sonnet-20241022"
+    if os.environ.get("XAI_API_KEY"):
+        return "xai", model_opt or "grok-2-latest"
+    if os.environ.get("OPENAI_BASE_URL"):
+        return "custom", model_opt or "default"
+
+    # Default fallback
+    return "groq", model_opt or "llama-3.3-70b-versatile"
+
+
 # ==============================================================================
 # Git Operations & Safety Sandbox
 # ==============================================================================
@@ -282,8 +541,6 @@ def construct_pr_url(remote_url: str, branch: str) -> Optional[str]:
     """Generates a direct 1-click Pull Request URL for GitHub or GitLab."""
     if not remote_url:
         return None
-    # SSH format: git@github.com:owner/repo.git
-    # HTTPS format: https://github.com/owner/repo.git
     m = re.search(r"github\.com[:/]([^/]+)/([^/\.]+)(?:\.git)?", remote_url)
     if m:
         owner, repo_name = m.group(1), m.group(2)
@@ -319,7 +576,6 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                 rel_parts = p.relative_to(repo).parts
                 if any(x in rel_parts for x in (".git", "__pycache__", "node_modules", ".venv", "venv", ".idea")):
                     continue
-                # Use as_posix() so file paths use forward slashes uniformly across Windows, Linux, and macOS
                 files.append(p.relative_to(repo).as_posix())
             return "\n".join(files[:250]) if files else "(empty repository)"
 
@@ -328,7 +584,6 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
             if not target.exists():
                 return f"ERROR: File '{args['path']}' does not exist."
             content = target.read_text(encoding="utf-8", errors="replace")
-            # Limit return size to avoid context exhaustion
             return content[:16000]
 
         if name == "write_file":
@@ -339,7 +594,6 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
 
         if name == "run_command":
             cmd = args["command"].strip()
-            # Command whitelist check
             if not cmd.startswith(ALLOWED_COMMAND_PREFIXES):
                 return (
                     f"BLOCKED: Command not in safety whitelist. "
@@ -349,9 +603,7 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
                 return f"BLOCKED: Command contains disallowed keyword. Disallowed: {BLOCKED_COMMAND_KEYWORDS}"
 
             try:
-                # OS-agnostic command tokenization
                 cmd_parts = shlex.split(cmd, posix=(os.name != "nt"))
-                # Map python / python3 binary to the active Python interpreter so py_compile works on all OS
                 if cmd_parts and cmd_parts[0] in ("python", "python3"):
                     cmd_parts[0] = sys.executable
 
@@ -385,35 +637,28 @@ def execute_tool(repo: Path, name: str, args: Dict[str, Any], timeout_sec: int =
 # ==============================================================================
 # Autonomous LLM Reasoning Loop
 # ==============================================================================
-def call_groq_with_retry(client: Groq, model: str, messages: List[Dict[str, Any]]) -> Any:
-    """Robust Groq completion with exponential backoff on rate limits."""
+def call_ai_with_retry(client: UnifiedAIClient, messages: List[Dict[str, Any]]) -> NormalizedResponse:
+    """Robust AI completion call with exponential backoff on rate limits."""
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            return client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                temperature=0.1,
-                max_tokens=4096,
-            )
-        except RateLimitError:
-            wait_time = 12 * (attempt + 1)
-            log_warn(f"Groq API rate limit encountered. Pausing for {wait_time}s (retry {attempt+1}/{max_retries})...")
-            time.sleep(wait_time)
+            return client.chat_completion(messages)
         except Exception as e:
-            if "rate_limit" in str(e).lower():
-                wait_time = 15 * (attempt + 1)
-                log_warn(f"Rate limit notice: {e}. Waiting {wait_time}s...")
+            err_str = str(e).lower()
+            if "rate_limit" in err_str or "429" in err_str:
+                wait_time = 12 * (attempt + 1)
+                log_warn(f"{client.provider.upper()} API rate limit encountered. Waiting {wait_time}s (retry {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            elif "timeout" in err_str or "connection" in err_str:
+                wait_time = 5 * (attempt + 1)
+                log_warn(f"Network issue encountered: {e}. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
                 raise e
-    raise TimeoutError("Exceeded maximum Groq API retries due to persistent rate limiting.")
+    raise TimeoutError(f"Exceeded maximum API retries for provider '{client.provider}'.")
 
 
-def run_agent_loop(repo: Path, model: str, max_turns: int = DEFAULT_MAX_TURNS) -> Optional[Dict[str, Any]]:
-    client = Groq()
+def run_agent_loop(repo: Path, client: UnifiedAIClient, max_turns: int = DEFAULT_MAX_TURNS) -> Optional[Dict[str, Any]]:
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -422,22 +667,22 @@ def run_agent_loop(repo: Path, model: str, max_turns: int = DEFAULT_MAX_TURNS) -
         },
     ]
 
-    log_step("AGENT", f"Reasoning session initialized with model '{model}' (Turn budget: {max_turns})")
+    log_step("AGENT", f"Reasoning session initialized with provider '{client.provider.upper()}' | model '{client.model}' (Turn budget: {max_turns})")
 
     malformed_retries = 0
 
     for turn in range(1, max_turns + 1):
         try:
-            response = call_groq_with_retry(client, model, messages)
-        except BadRequestError as err:
+            response = call_ai_with_retry(client, messages)
+        except Exception as err:
             malformed_retries += 1
-            log_warn(f"Malformed tool call payload ({malformed_retries}/3): {str(err)[:120]}")
+            log_warn(f"API interaction error ({malformed_retries}/3): {str(err)[:120]}")
             if malformed_retries > 3:
-                log_error("Aborting session: repeated malformed tool invocations from model.")
+                log_error("Aborting session: repeated API request failures.")
                 return None
             messages.append({
                 "role": "user",
-                "content": "Your previous tool call had malformed JSON parameters. Please retry with strictly valid JSON.",
+                "content": "Your previous response resulted in an error. Please retry with valid JSON tool call arguments.",
             })
             continue
 
@@ -499,21 +744,56 @@ def run_agent_loop(repo: Path, model: str, max_turns: int = DEFAULT_MAX_TURNS) -
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Autonomous EC2 to AWS Lambda Migration Agent",
+        description="Autonomous EC2 to AWS Lambda Migration Agent CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Supported AI Providers:
+  • Groq:      export GROQ_API_KEY="..."       (Default: llama-3.3-70b-versatile)
+  • OpenAI:    export OPENAI_API_KEY="..."     (Default: gpt-4o)
+  • Gemini:    export GEMINI_API_KEY="..."     (Default: gemini-2.0-flash)
+  • Claude:    export ANTHROPIC_API_KEY="..."  (Default: claude-3-5-sonnet-20241022)
+  • xAI:       export XAI_API_KEY="..."        (Default: grok-2-latest)
+  • Custom:    export OPENAI_BASE_URL="..."    (Ollama, DeepSeek, vLLM, OpenRouter)
+
 Examples:
-  # Analyze repo, migrate on feature branch, and push to origin
-  python agent.py /path/to/my-ec2-app --push
+  # Auto-detect provider from environment key and run
+  aws-migrator /path/to/my-ec2-app --push
 
-  # Run migration locally without pushing to remote
-  python agent.py /path/to/my-ec2-app --no-push
+  # Use OpenAI (ChatGPT)
+  aws-migrator /path/to/my-ec2-app --provider openai --model gpt-4o
 
-  # Use custom remote or model
-  python agent.py /path/to/my-ec2-app --remote upstream --model llama-3.3-70b-versatile
+  # Use Google Gemini
+  aws-migrator /path/to/my-ec2-app --provider gemini --model gemini-2.0-flash
+
+  # Use Anthropic Claude
+  aws-migrator /path/to/my-ec2-app --provider claude --model claude-3-5-sonnet-20241022
+
+  # Use xAI (Grok)
+  aws-migrator /path/to/my-ec2-app --provider xai --model grok-2-latest
         """,
     )
     parser.add_argument("repo", help="Path to local target git repository")
+    parser.add_argument(
+        "--provider",
+        default="auto",
+        choices=["auto", "groq", "openai", "gemini", "claude", "anthropic", "xai", "custom"],
+        help="AI model provider (default: 'auto' - auto-detects from model or environment variables)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model identifier (e.g. gpt-4o, gemini-2.0-flash, claude-3-5-sonnet-20241022, grok-2-latest, llama-3.3-70b-versatile)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Optional API key override (overrides environment variable)",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Custom base URL for OpenAI-compatible endpoints (Ollama, DeepSeek, OpenRouter, vLLM)",
+    )
     parser.add_argument(
         "--push",
         dest="push",
@@ -533,11 +813,6 @@ Examples:
         help="Name of the git remote repository to push to (default: 'origin')",
     )
     parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Groq model identifier (default: '{DEFAULT_MODEL}')",
-    )
-    parser.add_argument(
         "--max-turns",
         type=int,
         default=DEFAULT_MAX_TURNS,
@@ -548,7 +823,7 @@ Examples:
     repo_path = Path(args.repo).resolve()
 
     print("\n" + "=" * 70)
-    print(f"{Colors.BOLD}AWS LAMBDA AUTONOMOUS MIGRATION AGENT{Colors.RESET}")
+    print(f"{Colors.BOLD}AWS LAMBDA AUTONOMOUS MIGRATION AGENT CLI{Colors.RESET}")
     print("=" * 70)
 
     # 1. Validation of target repository
@@ -572,22 +847,39 @@ Examples:
         )
         sys.exit(1)
 
-    if not os.environ.get("GROQ_API_KEY"):
-        log_error("Environment variable 'GROQ_API_KEY' is not set. Please export your Groq API key.")
+    # 2. Resolve AI Provider and Initialize Client
+    provider_name, target_model = detect_provider_and_model(args.provider, args.model)
+    try:
+        ai_client = UnifiedAIClient(
+            provider=provider_name,
+            model=target_model,
+            api_key=args.api_key,
+            base_url=args.base_url,
+        )
+        log_success(f"AI Provider connected: [{provider_name.upper()}] with model '{target_model}'")
+    except Exception as exc:
+        log_error(f"AI Provider Initialization Failed: {exc}")
+        print("\nPlease set an API key for your desired provider:")
+        print("  • Groq:      export GROQ_API_KEY='gsk_...'")
+        print("  • OpenAI:    export OPENAI_API_KEY='sk-...'")
+        print("  • Gemini:    export GEMINI_API_KEY='...' or export GOOGLE_API_KEY='...'")
+        print("  • Claude:    export ANTHROPIC_API_KEY='sk-ant-...'")
+        print("  • xAI:       export XAI_API_KEY='xai-...'")
+        print("  • Custom:    export OPENAI_BASE_URL='http://localhost:11434/v1'\n")
         sys.exit(1)
 
     original_branch = get_current_branch(repo_path)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     migration_branch = f"lambda-migration-{timestamp}"
 
-    # 2. Safe Feature Branch Isolation
+    # 3. Safe Feature Branch Isolation
     log_step("GIT", f"Original Branch: '{original_branch}'")
     log_step("GIT", f"Spawning isolated migration branch: '{migration_branch}'")
     run_git(repo_path, "checkout", "-b", migration_branch)
 
     migration_verdict = None
     try:
-        migration_verdict = run_agent_loop(repo_path, model=args.model, max_turns=args.max_turns)
+        migration_verdict = run_agent_loop(repo_path, client=ai_client, max_turns=args.max_turns)
     except KeyboardInterrupt:
         log_warn("\nSession aborted by user.")
     finally:
@@ -602,13 +894,13 @@ Examples:
             commit_msg = (
                 f"feat(aws-lambda): automated migration by Autonomous Agent\n\n"
                 f"Verdict: {migration_verdict.get('verdict', 'processed') if migration_verdict else 'completed'}\n"
-                f"Generated by: Lambda Migration Agent ({args.model})\n"
+                f"Generated by: Lambda Migration Agent ({provider_name}/{target_model})\n"
                 f"Target Branch: {migration_branch}"
             )
             run_git(repo_path, "commit", "-m", commit_msg)
             log_success(f"Changes committed to isolated branch: '{migration_branch}'")
 
-            # 3. Remote Push Handling
+            # 4. Remote Push Handling
             if args.push:
                 available_remotes = get_git_remotes(repo_path)
                 if args.remote in available_remotes:
