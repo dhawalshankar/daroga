@@ -288,7 +288,6 @@ On every migration run, DAROGA places the following files onto the isolated feat
 | **`backend/lambda.js`** *(Node)* | Express/Koa serverless adapter using `@vendia/serverless-express`. |
 | **`template.yaml`** | AWS SAM template declaring HTTP API Gateway v2, Lambda Graviton compute, and routes. |
 | **`USER.md`** | Human operator manual for the AWS Management Console with step-by-step clicks. |
-| **`MIGRATION_REPORT.md`** | Executive architectural comparison between EC2 and AWS Lambda. |
 
 ### Target Serverless Topology
 
@@ -336,25 +335,47 @@ DAROGA can inspect your currently open AWS Management Console sessions without n
 
 ## Multi-Provider & Zero-API Offline Mode
 
-DAROGA supports all major AI reasoning providers as well as a native offline engine:
+DAROGA supports all major AI reasoning providers as well as a native offline engine.
+
+### 🌟 Which AI API Should You Use for Live Demonstrations?
+
+When demonstrating DAROGA as an **Autonomous AI Agent** to judges, clients, or evaluators:
+
+```mermaid
+flowchart TD
+    Start["Live Demonstration"] --> Choice{"Audience & Priority?"}
+    
+    Choice -->|"Fastest Live Demo & Free"| Groq["Groq API (Recommended)<br/>Model: llama-3.3-70b-versatile<br/>Speed: 300+ tokens/sec, instant response"]
+    Choice -->|"Highest Brand Trust"| OpenAI["OpenAI API<br/>Model: gpt-4o<br/>Gold standard enterprise LLM"]
+    Choice -->|"Google Cloud / Big Context"| Gemini["Google Gemini API<br/>Model: gemini-2.0-flash<br/>High free tier, fast execution"]
+    Choice -->|"Air-Gapped / Privacy Strict"| Offline["Offline Engine (--offline)<br/>Zero API keys, 100% deterministic"]
+```
+
+| Provider | Recommended Model | Best For | Why Use It In A Demo? |
+|---|---|---|---|
+| **Groq (Top Recommendation)** ⚡ | `llama-3.3-70b-versatile` | **Live Stage Demos & Audits** | **Instant response speed (300+ tokens/sec)**. Agent decision loops and AST inspections execute live without awkward loading pauses. Free API keys at [console.groq.com](https://console.groq.com). |
+| **OpenAI** 🧠 | `gpt-4o` | **Client & Executive Presentations** | Maximum brand recognition. Evaluators immediately trust GPT-4o reasoning for code generation. |
+| **Google Gemini** 🌐 | `gemini-2.0-flash` | **High Free Limits & Speed** | Extremely fast and generous free rate limits via Google AI Studio. |
+| **Anthropic Claude** 🏛️ | `claude-3-5-sonnet-20241022` | **Complex Enterprise Codebases** | Industry-leading coding and tool-calling accuracy. |
+| **Offline Heuristic Mode** 🔒 | `static-analysis-engine` | **Air-Gapped / Privacy Clients** | Zero API calls, zero token costs, runs completely offline via `--offline`. |
 
 ```bash
-# Groq (Default / Fast):
+# 1. Groq (Recommended for live demos: instant 300 tokens/sec speed):
 export GROQ_API_KEY="gsk_..."
 
-# OpenAI:
+# 2. OpenAI:
 export OPENAI_API_KEY="sk-..."
 
-# Google Gemini:
+# 3. Google Gemini:
 export GEMINI_API_KEY="AIzaSy..."
 
-# Anthropic Claude:
+# 4. Anthropic Claude:
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# xAI:
+# 5. xAI:
 export XAI_API_KEY="xai-..."
 
-# Zero-API Offline Mode (Zero cost, no keys needed):
+# 6. Zero-API Offline Mode (Zero cost, no keys needed):
 daroga /path/to/my-ec2-app --offline
 ```
 

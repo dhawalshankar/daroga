@@ -56,45 +56,77 @@ You can now use the `daroga` command from any terminal on your system.
 
 ---
 
-## 3. Environment Variables (Configuration)
+## 3. Environment Variables & AI Model Selection for Demos
 
-Before running DAROGA, you can configure your AI provider and your AWS access. 
+DAROGA is an **Autonomous AI Agent**. It uses Large Language Model (LLM) reasoning loops to read your codebase, make architectural decisions, write serverless adapters, and validate generated code.
 
-### A. AI Provider Key (Choose One)
-DAROGA uses an AI model to evaluate your code and write the serverless files. Set **one** of the following keys based on what you have:
+### 🌟 Which AI API Should You Use for Demonstrations?
 
-#### If using Groq (Fastest & Recommended):
-- **Windows PowerShell**:
-  ```powershell
-  $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
-  ```
-- **Mac / Linux**:
-  ```bash
-  export GROQ_API_KEY="gsk_your_groq_api_key_here"
-  ```
+When demonstrating DAROGA to clients, evaluators, or management, choose based on your goal:
 
-#### If using OpenAI (ChatGPT):
-- **Windows PowerShell**:
-  ```powershell
-  $env:OPENAI_API_KEY="sk_your_openai_api_key_here"
-  ```
-- **Mac / Linux**:
-  ```bash
-  export OPENAI_API_KEY="sk_your_openai_api_key_here"
-  ```
+```mermaid
+flowchart TD
+    Start["Demonstration Goal"] --> Choice{"What is your priority?"}
+    
+    Choice -->|"Ultra-Fast Live Demo & Free"| Groq["Groq API (Recommended)<br/>Model: llama-3.3-70b-versatile<br/>Speed: 300+ tokens/sec, instant response"]
+    Choice -->|"Maximum Brand Recognition"| OpenAI["OpenAI API<br/>Model: gpt-4o<br/>Industry gold standard reasoning"]
+    Choice -->|"Google Cloud / Big Context"| Gemini["Google Gemini API<br/>Model: gemini-2.0-flash<br/>High free tier, fast execution"]
+    Choice -->|"No Internet / Zero API Cost"| Offline["Offline Engine (--offline)<br/>Zero API keys, 100% deterministic"]
+```
 
-#### If using Google Gemini:
-- **Windows PowerShell**:
-  ```powershell
-  $env:GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
-  ```
-- **Mac / Linux**:
-  ```bash
-  export GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
-  ```
+| Provider | Recommended Model | Best For | Why Use It In A Demo? |
+|---|---|---|---|
+| **Groq (Top Pick)** ⚡ | `llama-3.3-70b-versatile` | **Live Stage Demos & Audits** | **Instant speed (300+ tokens/sec)**. The agent loops and tool calls run before the audience gets bored. Generous free API keys available at [console.groq.com](https://console.groq.com). |
+| **OpenAI** 🧠 | `gpt-4o` | **Client & Executive Presentations** | Highest brand trust. Evaluators immediately recognize GPT-4o autonomous reasoning. |
+| **Google Gemini** 🌐 | `gemini-2.0-flash` | **Cost Efficiency & Speed** | Extremely fast and generous free tier via Google AI Studio. |
+| **Anthropic Claude** 🏛️ | `claude-3-5-sonnet-20241022` | **Complex Polyglot Repositories** | Unmatched code architecture synthesis and precision tool execution. |
+| **Offline Engine** 🔒 | `static-analysis-engine` | **Air-gapped / Privacy-Strict Clients** | 100% free, runs without internet or keys using `--offline`. |
 
-#### If you don't have any AI key:
-You don't need any key at all! You can run DAROGA completely free using the `--offline` flag.
+---
+
+### How to Set Your API Key
+
+Set **one** of the following environment variables in your terminal before running DAROGA:
+
+#### Option 1: Groq (Recommended for Demo)
+1. Get a free API key at: [https://console.groq.com/keys](https://console.groq.com/keys)
+2. Set the key in your terminal:
+   - **Windows PowerShell**:
+     ```powershell
+     $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
+     ```
+   - **Windows CMD**:
+     ```cmd
+     set GROQ_API_KEY=gsk_your_groq_api_key_here
+     ```
+   - **Mac / Linux**:
+     ```bash
+     export GROQ_API_KEY="gsk_your_groq_api_key_here"
+     ```
+
+#### Option 2: OpenAI (GPT-4o)
+1. Get an API key at: [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. Set the key in your terminal:
+   - **Windows PowerShell**:
+     ```powershell
+     $env:OPENAI_API_KEY="sk_your_openai_api_key_here"
+     ```
+   - **Mac / Linux**:
+     ```bash
+     export OPENAI_API_KEY="sk_your_openai_api_key_here"
+     ```
+
+#### Option 3: Google Gemini
+1. Get an API key at: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. Set the key in your terminal:
+   - **Windows PowerShell**:
+     ```powershell
+     $env:GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
+     ```
+   - **Mac / Linux**:
+     ```bash
+     export GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
+     ```
 
 ---
 
