@@ -18,6 +18,7 @@ Audits in-guest runtime properties that cannot be detected from code alone:
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -64,6 +65,7 @@ class VMGuestInspectionReport:
     running_processes: List[VMProcessInfo] = field(default_factory=list)
     app_directories_found: List[str] = field(default_factory=list)
     cron_jobs: List[str] = field(default_factory=list)
+    docker_images: List[str] = field(default_factory=list)
     docker_containers: List[str] = field(default_factory=list)
     in_guest_env_vars: Dict[str, str] = field(default_factory=dict)
     disk_usage_summary: str = ""
@@ -79,11 +81,12 @@ class VMInspector:
     INSPECTION_COMMANDS = {
         "os_release": "cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -srm",
         "listening_ports": "ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null",
-        "active_services": "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -n 30",
-        "processes": "ps aux --sort=-%mem 2>/dev/null | head -n 25",
+        "active_services": "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -n 35",
+        "processes": "ps aux --sort=-%mem 2>/dev/null | grep -v '===DAROGA_SECTION' | head -n 25",
+        "docker_images": "docker images --format '{{.Repository}}:{{.Tag}} ({{.Size}})' 2>/dev/null || true",
+        "docker_containers": "docker ps -a --format '{{.Names}} ({{.Image}}, status: {{.Status}})' 2>/dev/null || true",
         "app_dirs": "ls -d /opt/* /var/www/* /home/*/* 2>/dev/null | head -n 20",
         "cron_jobs": "crontab -l 2>/dev/null || ls -la /etc/cron.* 2>/dev/null | head -n 15",
-        "docker_containers": "docker ps --format '{{.Names}} ({{.Image}}, status: {{.Status}})' 2>/dev/null || true",
         "disk_usage": "df -h / 2>/dev/null | tail -n 1",
     }
 
@@ -259,28 +262,34 @@ class VMInspector:
         return False
 
     def _parse_guest_telemetry(self, raw_output: str, report: VMGuestInspectionReport):
-        """Parses partitioned stdout sections into structured dataclass."""
-        sections = raw_output.split("===DAROGA_SECTION:")
-        for sec in sections:
-            if not sec.strip():
-                continue
-            lines = sec.strip().splitlines()
-            tag = lines[0].split("===")[0].strip()
-            content_lines = lines[1:]
+        """Parses partitioned stdout sections using strict line-anchored regex delimiters."""
+        parts = re.split(r"(?m)^===DAROGA_SECTION:([a-zA-Z0-9_]+)===\s*$", raw_output)
+        sections: Dict[str, List[str]] = {}
+        for i in range(1, len(parts), 2):
+            tag = parts[i]
+            content = parts[i + 1].strip()
+            sections[tag] = [l.strip() for l in content.splitlines() if l.strip()]
 
-            if tag == "os_release":
-                report.os_release = " ".join(content_lines).strip() or "Linux"
-            elif tag == "listening_ports":
-                for line in content_lines:
-                    if any(proto in line.lower() for proto in ("tcp", "udp", "listen")):
-                        report.listening_ports.append(
-                            VMSocketBinding(protocol="TCP", local_address=line[:30], port=80, process_name=line.strip()[-30:])
-                        )
-            elif tag == "active_services":
-                report.active_services = [l.strip() for l in content_lines if l.strip()]
-            elif tag == "app_dirs":
-                report.app_directories_found = [l.strip() for l in content_lines if l.strip()]
-            elif tag == "docker_containers":
-                report.docker_containers = [l.strip() for l in content_lines if l.strip()]
-            elif tag == "disk_usage":
-                report.disk_usage_summary = " ".join(content_lines).strip()
+        if "os_release" in sections and sections["os_release"]:
+            report.os_release = sections["os_release"][0] or "Linux"
+        if "active_services" in sections:
+            report.active_services = sections["active_services"]
+        if "docker_images" in sections:
+            report.docker_images = sections["docker_images"]
+        if "docker_containers" in sections:
+            report.docker_containers = sections["docker_containers"]
+        if "app_dirs" in sections:
+            report.app_directories_found = sections["app_dirs"]
+        if "cron_jobs" in sections:
+            report.cron_jobs = sections["cron_jobs"]
+        if "disk_usage" in sections and sections["disk_usage"]:
+            report.disk_usage_summary = sections["disk_usage"][0]
+        if "listening_ports" in sections:
+            report.listening_ports = []
+            for line in sections["listening_ports"]:
+                if any(proto in line.lower() for proto in ("tcp", "udp", "listen")):
+                    m_port = re.search(r":(\d+)\b", line)
+                    port_num = int(m_port.group(1)) if m_port else 80
+                    report.listening_ports.append(
+                        VMSocketBinding(protocol="TCP", local_address=line[:30], port=port_num, process_name=line.strip()[-30:])
+                    )

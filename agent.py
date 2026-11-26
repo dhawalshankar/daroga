@@ -924,6 +924,10 @@ def run_agent_loop(
                 context_bulletins.append(f"In-Guest Live Listening Sockets: {', '.join(ports_desc)}")
             if guest.active_services:
                 context_bulletins.append(f"In-Guest Active Services: {', '.join(guest.active_services[:6])}")
+            if getattr(guest, "docker_images", None):
+                context_bulletins.append(f"In-Guest Docker Images: {', '.join(guest.docker_images[:4])}")
+            if getattr(guest, "docker_containers", None):
+                context_bulletins.append(f"In-Guest Running Containers: {', '.join(guest.docker_containers[:4])}")
 
     audit_summary_str = "\n".join(f"- {b}" for b in context_bulletins)
 
@@ -1623,7 +1627,8 @@ Examples:
                         if guest_rep.accessible:
                             if audit_res is not None:
                                 audit_res.guest_telemetry = guest_rep
-                            log_success(f"In-Guest VM Telemetry captured via {guest_rep.access_method}: OS '{guest_rep.os_release}', {len(guest_rep.active_services)} active services.")
+                            docker_desc = f", {len(guest_rep.docker_images)} docker images" if getattr(guest_rep, 'docker_images', None) else ""
+                            log_success(f"In-Guest VM Telemetry captured via {guest_rep.access_method}: OS '{guest_rep.os_release}', {len(guest_rep.active_services)} active services{docker_desc}.")
                         else:
                             log_warn(guest_rep.error_message or "In-guest inspection did not connect.")
                     else:
