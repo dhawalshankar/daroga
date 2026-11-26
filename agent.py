@@ -47,6 +47,12 @@ except ImportError:
     GroqRateLimitError = Exception
     GroqBadRequestError = Exception
 
+# Import DAROGA modular auditor
+try:
+    from daroga.orchestrator import DarogaOrchestrator
+except ImportError:
+    DarogaOrchestrator = None
+
 try:
     from openai import OpenAI, RateLimitError as OpenAIRateLimitError, BadRequestError as OpenAIBadRequestError
 except ImportError:
@@ -1217,6 +1223,44 @@ NEXT_PUBLIC_API_URL=https://<your-api-id>.execute-api.<region>.amazonaws.com
 # ==============================================================================
 # CLI Entrypoint & Workflow Orchestrator
 # ==============================================================================
+# ==============================================================================
+# DAROGA CLI Entrypoint & Workflow Orchestrator
+# ==============================================================================
+def daroga_main():
+    """
+    DAROGA — EC2 to AWS Lambda Migration Auditor Entrypoint.
+    Inspects repository, AWS EC2 infrastructure, and existing browser console.
+    Generates the authoritative 23-section EC2_TO_LAMBDA_MIGRATION_REPORT.md.
+    Strictly read-only: does not modify code or cloud infrastructure.
+    """
+    parser = argparse.ArgumentParser(
+        description="DAROGA — EC2 to AWS Lambda Migration Auditor",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("repo", nargs="?", default=".", help="Path to local target git repository (default: '.')")
+    parser.add_argument("--region", default=None, help="AWS Region (default: from AWS_REGION or 'us-east-1')")
+    parser.add_argument("--instance-id", default=None, help="Specific EC2 instance ID to inspect")
+    parser.add_argument("--cdp-url", default="http://127.0.0.1:9222", help="Chrome DevTools Protocol URL (default: 'http://127.0.0.1:9222')")
+    parser.add_argument("--output", default=None, help="Path to output markdown report (default: '<repo>/EC2_TO_LAMBDA_MIGRATION_REPORT.md')")
+
+    args = parser.parse_args()
+    repo_p = Path(args.repo).resolve()
+    out_p = Path(args.output).resolve() if args.output else None
+
+    if DarogaOrchestrator is None:
+        log_error("DAROGA modules not found. Ensure 'daroga' package is installed.")
+        sys.exit(1)
+
+    orchestrator = DarogaOrchestrator(
+        repo_path=repo_p,
+        region=args.region,
+        instance_id=args.instance_id,
+        cdp_url=args.cdp_url,
+        output_report_path=out_p,
+    )
+    orchestrator.run_audit()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Autonomous EC2 to AWS Lambda Migration Agent CLI",
@@ -1260,6 +1304,11 @@ Examples:
         help="Run offline using the built-in Autonomous Heuristic Architecture Engine (zero API calls, zero cost)",
     )
     parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Run in DAROGA read-only audit mode to generate EC2_TO_LAMBDA_MIGRATION_REPORT.md without touching code",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="Model identifier (e.g. gpt-4o, gemini-2.0-flash, claude-3-5-sonnet-20241022, grok-2-latest, llama-3.3-70b-versatile)",
@@ -1301,6 +1350,14 @@ Examples:
 
     args = parser.parse_args()
     repo_path = Path(args.repo).resolve()
+
+    if getattr(args, "audit", False):
+        if DarogaOrchestrator is None:
+            log_error("DAROGA modules not found. Ensure 'daroga' package is installed.")
+            sys.exit(1)
+        orchestrator = DarogaOrchestrator(repo_path=repo_path)
+        orchestrator.run_audit()
+        return
 
     print("\n" + "=" * 70)
     print(f"{Colors.BOLD}AWS LAMBDA AUTONOMOUS MIGRATION AGENT CLI{Colors.RESET}")
