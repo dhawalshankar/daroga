@@ -1,16 +1,14 @@
 # DAROGA System Architecture
 
-This document provides a detailed technical overview of the architecture, design principles, and inspection engine powering **DAROGA**.
+Technical map of the inspection pipeline, code generation, and Git lifecycle in **DAROGA** v2.0. Behavior below matches `agent.py` and the `daroga` package.
 
 ---
 
-## 1. Architectural Philosophy
+## 1. Design Rules
 
-DAROGA is built upon three foundational tenets:
-
-1. **Deterministic Foundations First**: Before invoking any LLM, DAROGA executes deterministic static analysis (AST parsing, file indexing, Boto3 AWS queries, Playwright CDP socket checks). This guarantees 100% reproducible facts without hallucinations.
-2. **Zero Blast Radius**: Live cloud infrastructure and the user's primary development branch (`main`) must never be modified. All mutations occur within an isolated Git feature branch (`lambda-migration-<timestamp>`).
-3. **Actionable Human Direction**: Automated code generation is only half the battle. DAROGA produces both machine-executable Infrastructure as Code (`template.yaml`) and human-executable instructions (`USER.md` and `EC2_TO_LAMBDA_MIGRATION_REPORT.md`) for the AWS Management Console.
+1. **Facts before the model.** `DarogaOrchestrator.run_audit` finishes the scan, CDP check, AWS inventory, compatibility rules, architecture map, cost math, and the markdown report before `run_agent_loop` starts.
+2. **Isolated Git branch.** Commits land on `lambda-migration-<YYYYMMDD-HHMMSS>`. The `finally` block checks out the branch that was current when the process started.
+3. **Operators deploy.** The tool writes `template.yaml` and `USER.md`. It does not call `sam deploy` or mutating Lambda/EC2 APIs. `--vm-access` may send an SSM shell script whose commands are diagnostic.
 
 ---
 
@@ -18,142 +16,230 @@ DAROGA is built upon three foundational tenets:
 
 ```mermaid
 flowchart TD
-    User["User CLI Invocation: daroga /path/to/project"] --> Entry["agent.py Entrypoint (Branch Isolation)"]
-    Entry --> Orch["daroga.orchestrator (Audit Coordinator)"]
+    User["daroga /path --flags"] --> Entry["agent.daroga_main"]
+    Entry --> GitPrep["Validate directory, git init if needed, require a clean tree"]
+    GitPrep --> Branch{"--audit-only?"}
+    Branch -- "No" --> Co["git checkout -b lambda-migration-timestamp"]
+    Branch -- "Yes" --> Orch
+    Co --> Orch["DarogaOrchestrator.run_audit"]
 
-    subgraph Inspectors ["Deterministic Inspection Engines"]
-        Orch --> S1["repository_scanner<br/>• AST Parsing<br/>• Language Stack<br/>• Monorepo Target"]
-        Orch --> S2["ec2_inspector<br/>• STS Caller Identity<br/>• EC2 & VPC Subnets<br/>• Security Groups"]
-        Orch --> S3["browser_inspector<br/>• Playwright CDP :9222<br/>• AWS Console Tabs<br/>• Live UI State"]
-        Orch --> S4["vm_inspector (--vm-access)<br/>• AWS SSM Run Command<br/>• Direct SSH Key Execution<br/>• In-Guest Sockets & Daemons"]
-        Orch --> S5["lambda_compatibility<br/>• 15-min Timeout<br/>• 6MB Payload<br/>• Graviton arm64"]
-        Orch --> S6["cost_estimator<br/>• EC2 24/7 Hourly<br/>• Lambda Free Tier<br/>• 100% Savings Model"]
+    subgraph Inspectors ["Audit steps, in order"]
+        Orch --> S1["repository_scanner.scan"]
+        S1 --> S2["browser_inspector.inspect"]
+        S2 --> S3["ec2_inspector.inspect_all"]
+        S3 --> S4["lambda_compatibility.evaluate"]
+        S4 --> S5["architecture_mapper.map_architecture"]
+        S5 --> S6["cost_estimator.estimate"]
+        S6 --> S7["report_generator.generate"]
     end
 
-    S1 & S2 & S3 & S4 & S5 & S6 --> Mapper["architecture_mapper<br/>(Serverless Topology & Graviton Sizing)"]
-    Mapper --> RepGen["report_generator<br/>(23-Section Audit Report)"]
-    RepGen --> CodeGen["Serverless Code Generator<br/>• lambda_main.go / py / js<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md (Console Manual)"]
-    CodeGen --> GitOrch["Git Orchestration Layer<br/>• Stage & Commit 6 Deliverables<br/>• Push to origin<br/>• Construct GitHub PR URL<br/>• Restore main Workspace"]
+    S7 --> Track["token_tracker summary becomes report section 23"]
+    Track --> Mode{"audit-only?"}
+    Mode -- "Yes" --> Stop["Return DarogaAuditResult"]
+    Mode -- "No" --> VM["Optional VMInspector when --vm-access or --ssh-key"]
+    VM --> Gen{"provider offline?"}
+    Gen -- "No" --> LLM["run_agent_loop with CODEGEN_TOOLS"]
+    Gen -- "Yes" --> Off["run_offline_analysis"]
+    LLM --> Check{"adapter + template.yaml + USER.md?"}
+    Check -- "No" --> Off
+    Check -- "Yes" --> Commit
+    Off --> Commit["git add -A and commit on the migration branch"]
+    Commit --> Push{"--push and remote exists?"}
+    Push -- "Yes" --> PR["git push -u, then gh pr create or compare URL"]
+    Push -- "No" --> Back
+    PR --> Back["git checkout starting branch"]
 ```
 
-### 2.1 Inspection Engine Subsystem Sequence
+### 2.1 Audit sequence
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Orch as daroga.orchestrator
+    participant CLI as agent.daroga_main
+    participant Orch as DarogaOrchestrator
     participant Scan as repository_scanner
-    participant AWS as ec2_inspector (Boto3)
-    participant CDP as browser_inspector (Playwright)
+    participant CDP as browser_inspector
+    participant AWS as ec2_inspector
     participant Compat as lambda_compatibility
-    participant RepGen as report_generator
+    participant Map as architecture_mapper
+    participant Cost as cost_estimator
+    participant Rep as report_generator
 
-    Orch->>Scan: scan() -> Discovered files, entrypoints, ports, blockers
-    Scan-->>Orch: RepositoryScanResult
-    Orch->>AWS: inspect_all() -> Caller identity, instances, VPCs, SecGroups
-    AWS-->>Orch: AWSInspectionResult
-    Orch->>CDP: inspect() -> Query CDP socket :9222 for Console tabs
-    CDP-->>Orch: BrowserInspectionResult
-    Orch->>Compat: evaluate(repo, aws) -> Score & findings
-    Compat-->>Orch: CompatibilityResult
-    Orch->>RepGen: generate() -> Compile 23-section report
-    RepGen-->>Orch: EC2_TO_LAMBDA_MIGRATION_REPORT.md written
+    CLI->>Orch: run_audit()
+    Orch->>Scan: scan()
+    Scan-->>Orch: RepoInspectionResult
+    Orch->>CDP: inspect()
+    CDP-->>Orch: BrowserConsoleFinding, optional detected_region
+    Orch->>AWS: inspect_all() using --region or detected_region
+    AWS-->>Orch: AWSInfrastructureReport
+    Orch->>Compat: evaluate(repo, aws)
+    Compat-->>Orch: CompatibilityEvaluationReport
+    Orch->>Map: map_architecture(repo, aws, compat)
+    Map-->>Orch: TargetServerlessArchitecture
+    Orch->>Cost: estimate(aws, memory, 150ms, docker flag)
+    Cost-->>Orch: CostBreakdown
+    Orch->>Rep: generate(...)
+    Rep-->>Orch: markdown
+    Orch-->>CLI: DarogaAuditResult
 ```
+
+`DarogaAuditResult` carries `verdict`, `score`, `blockers`, `conditions`, `target_runtime` (the recommended Lambda runtime string), and the structured `repo`, `aws`, `compat`, `arch`, and `cost` objects. Guest telemetry is attached later, in `daroga_main`, as `audit_res.guest_telemetry`. The report generator’s signature does not take that field.
 
 ---
 
-## 3. Modular Subsystems
+## 3. Modules
 
-### 3.1 Repository Scanner (`daroga/repository_scanner.py`)
-- Traverses the target repository recursively while skipping standard build and dependency directories (`node_modules/`, `.git/`, `dist/`, `build/`, `vendor/`, `venv/`).
-- Discovers languages (Go, Python, JavaScript, TypeScript, Shell), dependency manifests (`go.mod`, `package.json`, `requirements.txt`), entrypoints, and exposed network ports.
-- Detects architectural blockers: persistent TCP socket listeners (`http.ListenAndServe`, `app.run()`), local disk database writes (`sqlite3`, `sqlite.Open`), WebSocket servers (`gorilla/websocket`, `socket.io`), and container daemon execution (`/var/run/docker.sock`, `exec.Command("docker")`).
-- Monorepo Detection: Automatically identifies if the repository has a `backend/` directory alongside `frontend/` and scopes the serverless migration strictly to the backend service.
+### 3.1 Repository scanner (`daroga/repository_scanner.py`)
 
-### 3.2 Live AWS EC2 & Infrastructure Inspector (`daroga/ec2_inspector.py`)
-- Employs `boto3` and AWS CLI configuration to execute non-mutating cloud queries:
-  - `sts:GetCallerIdentity`: Verifies authenticated AWS Account ID, ARN, and user/role.
-  - `ec2:DescribeInstances`: Inspects running instances, instance IDs, instance types (e.g. `t3.micro`), state, public IPs, and attached IAM instance profiles.
-  - `ec2:DescribeSecurityGroups`: Audits inbound port authorizations (e.g. ports 80, 443, 8080) and CIDR blocks.
-  - `ec2:DescribeVpcs` & `ec2:DescribeSubnets`: Maps existing VPC topology for Lambda VPC integration.
-- Fault-Tolerant Resilience: Gracefully captures permissions denials (such as AWS Service Control Policies or SCP restrictions) and falls back to deterministic infrastructure heuristics without halting the pipeline.
+Walks the tree and skips dependency and build directories. It scores Go, Python, JavaScript, TypeScript, Java, and Rust, then sets `target_service_directory` from `backend/` when that directory exists, otherwise from the first entrypoint’s parent.
 
-### 3.3 Chrome DevTools Protocol (CDP) Browser Inspector (`daroga/browser_inspector.py`)
-- Leverages Playwright to connect to an existing running Google Chrome session via `http://127.0.0.1:9222`.
-- Inspects active browser pages without requiring stored cookies, credentials, or re-authenticating.
-- Scans for open AWS Management Console tabs (EC2 Dashboard, VPC Management, Lambda Console, CloudWatch Logs) and incorporates the user's active console context into the final report.
+It records entrypoints, ports, package manifests, Dockerfiles, nginx configs, CI files, database types, Docker execution (`docker run`, `/var/run/docker.sock`, docker clients), WebSockets, SQLite and local storage, and scheduled jobs.
 
-### 3.4 In-Guest VM Inspector (`daroga/vm_inspector.py`)
-- Initiated when `--vm-access` or `--ssh-key` is supplied.
-- Operates in strictly read-only, non-destructive mode via:
-  1. **AWS Systems Manager (SSM) Run Command**: Zero-open-port, IAM-governed execution requiring no local SSH keys.
-  2. **Direct SSH Execution**: Auto-discovers local candidate `.pem` keys in `~/.ssh/` and `~/Downloads/`, connecting to port 22.
-- Captures in-guest telemetry that cannot be seen from source code alone:
-  - Real listening TCP sockets and PID bindings (`ss -tulpn`)
-  - Active systemd units and background services (`systemctl list-units --type=service --state=running`)
-  - Running processes and memory consumption (`ps aux --sort=-%mem`)
-  - Live Docker daemon status and containers (`docker ps`)
-  - Deployed application directory paths (`/opt`, `/var/www`, `/home`)
-  - OS distribution (`/etc/os-release`) and root disk capacity (`df -h /`)
-- Injects live VM findings directly into the downstream LLM context to ground serverless code generation in actual production runtime conditions.
+### 3.2 Browser inspector (`daroga/browser_inspector.py`)
 
-### 3.5 Lambda Compatibility Engine (`daroga/lambda_compatibility.py`)
-- Evaluates application architecture against strict AWS Lambda service quotas:
-  - **Execution Duration**: Maximum 900 seconds (15 minutes).
-  - **Payload Size**: Synchronous invocation limit of 6 MB (request/response).
-  - **Disk Storage**: 512 MB to 10,240 MB ephemeral `/tmp` storage.
-  - **Continuous Listeners**: Evaluates converting persistent listeners to API Gateway HTTP events.
-  - **Container Sandboxes**: Identifies if dynamic Docker runs need decoupling to SQS + ECS Fargate.
-- Computes an overall feasibility score (0–100%) and categorizes the decision into `MIGRATE` or `MIGRATE (WITH DECOUPLING)`.
+1. GET `{cdp-url}/json/version` with a 1.5 s timeout.
+2. GET `{cdp-url}/json/list` and keep targets of type `page`.
+3. AWS tabs are those whose URL contains `console.aws.amazon.com` or `amazonaws.com`, or whose title contains `AWS Management Console`.
+4. A `region=` query parameter becomes `detected_region` and, when `--region` was omitted, the region passed into `EC2Inspector`.
+5. If Playwright is importable, `chromium.connect_over_cdp` (2.5 s) appends a confirmation note. Failures are swallowed.
 
-### 3.6 Architecture Mapper (`daroga/architecture_mapper.py`)
-- Synthesizes the target serverless topology:
-  - **Compute**: AWS Lambda running on **ARM64 Graviton** (`provided.al2023` for Go, `python3.12` for Python, `nodejs20.x` for Node.js) for 20% lower cost and higher performance.
-  - **Ingress**: Amazon API Gateway HTTP API v2 with `$default` stage, `/` and `/{proxy+}` catch-all routes.
-  - **Security & IAM**: Custom execution role (`<service>-LambdaExecutionRole`) with `AWSLambdaBasicExecutionRole` and VPC interface policies.
+Closed CDP is a note in report sections 5 and 22.
 
-### 3.7 Cost Estimator (`daroga/cost_estimator.py`)
-- Compares baseline 24/7 EC2 hourly expenditure against AWS Lambda request pricing:
-  - **EC2 Baseline**: Calculates monthly instance cost (e.g. $9.99/mo for `t3.micro`).
-  - **AWS Lambda Free Tier**: 1,000,000 requests/month and 3,200,000 compute seconds/month included free.
-  - **Projected Savings**: Demonstrates up to 100% cost reduction for small-to-medium traffic tiers.
+### 3.3 EC2 inspector (`daroga/ec2_inspector.py`)
 
-### 3.8 Report Generator (`daroga/report_generator.py`)
-- Compiles the authoritative 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md` combining AST data, live AWS state, CDP context, in-guest VM telemetry, compatibility evaluations, cost projections, and copy-paste-ready AWS CLI and Console instructions.
+Region resolution: constructor argument, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then `us-east-1`. The orchestrator passes the CDP region into that constructor when the CLI region is empty.
 
-### 3.9 Serverless Code & IaC Generator (`agent.py`)
-- Synthesizes language-specific serverless adapters:
-  - **Go**: `backend/lambda_main.go` using `httpadapter.HandlerAdapter` and `backend/build_lambda.sh` cross-compiling the Linux `bootstrap` binary.
-  - **Python**: `backend/lambda_function.py` using `apig_wsgi` or `mangum`.
-  - **Node.js**: `backend/lambda.js` using `@vendia/serverless-express`.
-- Generates AWS SAM template (`template.yaml`) declaring HTTP API Gateway v2, memory sizing, timeout, and architectures.
-- Generates the human operator manual (`USER.md`) and migration summary (`MIGRATION_REPORT.md`).
+When identity checks succeed, the inspector calls:
+
+- `ec2:DescribeInstances` (optional `InstanceIds`)
+- If the instance list is empty and no `--instance-id` was given, the same describe in `ap-southeast-2`, `us-east-1`, `us-east-2`, `us-west-2`, `ap-south-1`, `eu-west-1`, `eu-central-1`, `ap-southeast-1`, skipping the region already tried. The first region with instances becomes the active region for VPC and security-group calls.
+- `ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeSecurityGroups`
+- `iam:ListRoles` with `MaxItems=10`
+
+boto3 is preferred. `DescribeInstances` falls back to the `aws` CLI. Permission errors are stored on `errors_or_notes` and the pipeline continues. The module docstring mentions load balancers; `inspect_all` does not call ELB APIs, and `load_balancers` stays empty.
+
+### 3.4 VM inspector (`daroga/vm_inspector.py`)
+
+Invoked from `daroga_main` only when the run is not `--audit-only` and (`--vm-access` or `--ssh-key`) and `audit_res.aws.instances` is non-empty. The target is `instances[0]`.
+
+Access order:
+
+1. SSM `DescribeInstanceInformation`, then `SendCommand` on `AWS-RunShellScript`, polled for up to about 20 seconds.
+2. SSH to `public_ip` with the explicit key and then discovered keys (`*.pem` under `~/.ssh`, plus `id_rsa`, `id_ed25519`, and two historical filenames under `~/.ssh` and `Downloads`). Users tried: `--ssh-user` (default `ubuntu`); when that default is left as `ubuntu`, also `ec2-user` and `root`.
+
+The module header mentions EC2 Instance Connect. `inspect_instance` does not call it.
+
+Parsed fields: OS, listening sockets, systemd units, processes, Docker images, Docker containers, app directories, cron lines, disk usage. The prompt builder forwards OS, up to five sockets, six services, four images, and four containers.
+
+### 3.5 Compatibility engine (`daroga/lambda_compatibility.py`)
+
+| Rule | Topic |
+|---|---|
+| `RULE-RNT-01/02/03` | Go `provided.al2023`, Python `python3.12`, Node `nodejs20.x` |
+| `RULE-NET-01` | Continuous listener becomes API Gateway. Severity medium, so a plain HTTP app scores 80 and verdict `MIGRATE (WITH CODE MODIFICATIONS)` |
+| `RULE-CNT-01` | Docker execution. High. Condition: ECS Fargate or Batch via SQS or EventBridge |
+| `RULE-WBS-01` | WebSockets. High. API Gateway WebSocket API and DynamoDB |
+| `RULE-STR-01` | SQLite / local disk. High. S3, DynamoDB, or RDS |
+| `RULE-LIM-01` | 900 s Lambda ceiling. High only when Docker execution was also detected; otherwise informational, with the API Gateway 30 s note |
+| `RULE-LIM-02` | 6 MB synchronous payload |
+| `RULE-LIM-03` | `/tmp` 512 MB–10 GB |
+| `RULE-JOB-01` | Cron becomes EventBridge Scheduler |
+| `RULE-DB-01` | Pools in global scope; RDS Proxy for Postgres/MySQL |
+
+Verdict ladder: critical → `NOT RECOMMENDED` (score ≤ 40); else any high → `MIGRATE (WITH DECOUPLING)` (score ≤ 60); else any medium → `MIGRATE (WITH CODE MODIFICATIONS)` (80); else `MIGRATE (FULLY COMPATIBLE)` (95).
+
+Defaults that the report prints when a rule does not override them: memory **512 MB**, timeout **30 s**. `run_offline_analysis` hardcodes the same memory and timeout in `template.yaml`.
+
+### 3.6 Architecture mapper (`daroga/architecture_mapper.py`)
+
+Always proposes Lambda arm64, API Gateway HTTP API v2 (`ANY /{proxy+}`, payload format 2.0), CloudWatch Logs, and an IAM role named `{repo}-LambdaExecutionRole` with `AWSLambdaBasicExecutionRole`. A VPC id on the first instance adds `AWSLambdaVPCAccessExecutionRole`. Detected databases are reused. `has_scheduled_jobs` adds EventBridge Scheduler.
+
+### 3.7 Cost estimator (`daroga/cost_estimator.py`)
+
+On-demand Linux hourly rates for a fixed set of `t2`, `t3`, `t4g`, `m5.large`, and `c5.large` sizes, times 730 hours, plus 30 GB gp3 at `$0.08/GB-month`. Unknown types use the `t3.micro` hourly rate (`0.0104`).
+
+Lambda low traffic (under 1,000,000 requests) is `$0.00`. Moderate traffic (2,500,000 requests) is `$1.80` (`$0.30` Lambda invocations + `$1.50` API Gateway). Docker decoupling adds a `$5.00` Fargate allowance on the moderate figure. Savings percent is computed only when a live instance exists. Otherwise `savings_label` is the ESTIMATE string and `monthly_savings_percent` is `None`.
+
+Free-tier text in the report: Lambda requests and GB-seconds are permanent; HTTP API’s 1,000,000 calls are the first 12 months; CloudWatch includes 5 GB ingestion.
+
+### 3.8 Token tracker (`daroga/token_tracker.py`)
+
+The orchestrator records files scanned, AWS resource count (instances + security groups + VPCs), and the number of compatibility findings. It does not record LLM token counts today; section 23 prints those counters as zeros unless something else calls `record_llm_call`. The model loop does not call the tracker.
+
+### 3.9 Report generator (`daroga/report_generator.py`)
+
+Writes the 23 headings listed in the README, from the structured audit objects. Console click-path is section 16. CLI snippets are section 17 and are marked for the operator to run. Section 10 is an ASCII diagram of Client → HTTP API → Lambda → CloudWatch and the existing database.
+
+### 3.10 Code generation (`agent.py`)
+
+`CODEGEN_TOOLS` is `write_file` and `finish`. A larger `TOOLS` list (`list_files`, `read_file`, `search`, `run_command`) exists in the file and is not passed into `run_agent_loop`.
+
+`run_agent_loop` builds a user message from verdict, runtime, conditions, blockers, entrypoints, ports, frameworks, guest telemetry, and the first 1,200 characters of the first entrypoint file that exists. `call_ai_with_retry` compacts long OpenAI-compatible transcripts to the system message, the original user message, and the last six messages.
+
+`finish` accepts `MIGRATE`, `MIGRATE (WITH DECOUPLING)`, `NOT RECOMMENDED`, and a few legacy aliases (`migrate`, `partial`, `do_not_migrate`). The authoritative verdict printed in the summary is `audit_res.verdict` when the audit object exists.
+
+`run_offline_analysis` writes:
+
+- Go: `lambda_main.go` using `httpadapter`, and `build_lambda.sh` (`go build -o bootstrap lambda_main.go` with `GOOS=linux GOARCH=arm64`)
+- Python: `lambda_function.py` trying `apig_wsgi` then `Mangum`, importing `app` or `main`
+- Node: `lambda.js` with `@vendia/serverless-express`
+- `template.yaml` with `BackendFunction`, `Architectures: [arm64]`, routes `/` and `/{proxy+}`, env `ENVIRONMENT` and `PORT`
+- `USER.md` with `sam build` / `sam deploy --guided` and console steps, plus `NEXT_PUBLIC_API_URL`
+
+Language selection in the offline function treats `audit_res.target_runtime` as the strings `go`, `python`, or `node`. The orchestrator stores the Lambda runtime id (`provided.al2023`, `python3.12`, `nodejs20.x`) in that field. When an audit result is present, those equality checks do not match, and the offline writer falls through to a Node `template.yaml` runtime unless the audit object is missing and it can see `go.mod`, `requirements.txt`, or `package.json` on disk. Online generation asks the model for the adapter named from the same `target_runtime` field (`go` / `python` / `node`), so a normal audited run depends on the model choosing the language from the entrypoint preview.
 
 ---
 
-## 4. Git Orchestration & Blast Radius Management
-
-DAROGA enforces strict safety invariants:
-
-```mermaid
-stateDiagram-v2
-    [*] --> CleanMain: Verify Working Tree Clean
-    CleanMain --> BranchCreated: Checkout lambda-migration-<timestamp>
-    BranchCreated --> ArtifactsGenerated: Audit & Code Generation
-    ArtifactsGenerated --> Committed: git add -A & git commit
-    Committed --> PushedRemote: git push -u origin <branch>
-    PushedRemote --> PRGenerated: Construct GitHub PR URL
-    PRGenerated --> CleanMainRestored: git checkout main
-    CleanMainRestored --> [*]: Workspace 100% Untouched
-```
-
-### 4.1 Git Flow Transition Pipeline
+## 4. Git Lifecycle
 
 ```mermaid
 flowchart LR
-    A["Original Branch (main)"] -->|"Checkout -b"| B["Isolated Branch (lambda-migration-*)"]
-    B -->|"Generate & Commit"| C["6 Deliverables Staged"]
-    C -->|"Push Remote"| D["Remote (origin)"]
-    D -->|"Output"| E["GitHub Pull Request Link"]
-    B -->|"Checkout main"| F["Original Branch (main) 100% Intact"]
+    A["Starting branch"] -->|"checkout -b"| B["lambda-migration-timestamp"]
+    B -->|"report, adapter, template.yaml, USER.md"| C["git commit"]
+    C -->|"--push"| D["git push -u remote branch"]
+    D --> E["gh pr create --base starting branch"]
+    E --> F["compare URL if gh fails"]
+    C -->|"no --push"| G["print push and gh commands"]
+    B -->|"checkout"| A
+    D --> A
+    G --> A
 ```
+
+Details that the diagrams above depend on:
+
+- Dirty trees exit 1 before a branch is created. A leftover untracked `EC2_TO_LAMBDA_MIGRATION_REPORT.md` is removed first.
+- A non-repo directory is `git init`’d and given `chore: initial commit before Lambda migration`.
+- Commit author is supplied with `git -c user.name` and `user.email` for that process. Git config files are not edited.
+- `--push` requires the named remote (`origin` by default). Push failure is logged and the local commit is kept.
+- `raise_pull_request` runs `gh pr create --base <starting branch> --head <migration branch>`. On failure it builds `https://github.com/{owner}/{repo}/pull/new/{branch}` or the GitLab merge-request URL.
+- After checkout of the starting branch, a migration branch with an empty `rev-list starting..migration` is deleted with `git branch -D`.
+- `__pycache__` directories under the target are removed before the commit.
+
+```mermaid
+stateDiagram-v2
+    [*] --> CleanTree: status --porcelain is empty
+    CleanTree --> BranchCreated: checkout -b lambda-migration-timestamp
+    BranchCreated --> Artifacts: audit, optional VM, codegen
+    Artifacts --> Committed: commit when status is dirty
+    Artifacts --> NoCommit: tree still clean
+    Committed --> Pushed: --push
+    Committed --> Restored: push skipped
+    Pushed --> Restored: checkout starting branch
+    NoCommit --> Restored: checkout starting branch
+    Restored --> Deleted: branch -D when the migration branch has no commits
+    Restored --> [*]: migration branch kept
+    Deleted --> [*]
+```
+
+---
+
+## 5. Safety Boundaries in Code
+
+| Boundary | Where |
+|---|---|
+| Path traversal | `safe_resolve_path` rejects writes outside the repo |
+| Shell validation allow-list | `ALLOWED_COMMAND_PREFIXES` (`py_compile`, `pytest`, `sam validate`, `node --check`, `go vet/build/test`, `npm`, `npx`) and `BLOCKED_COMMAND_KEYWORDS` including `git`, `aws`, `push`, `deploy` |
+| Model tool surface | `CODEGEN_TOOLS` only |
+| AWS inventory | Describe/Get/List calls in `ec2_inspector.py` |
+| Guest commands | Fixed `INSPECTION_COMMANDS` dict |
+| CDP | Titles and URLs |

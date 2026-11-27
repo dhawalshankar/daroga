@@ -1,325 +1,237 @@
-# DAROGA — Customer & End-User Quickstart Guide
+# DAROGA — Customer Quickstart
 
-Welcome to **DAROGA**! This guide is designed for **cloud operators, system administrators, business teams, and non-developers** who want to evaluate and migrate an existing AWS EC2-hosted application to AWS Lambda with minimal effort.
+This guide is for someone running the `daroga` command. You do not need to edit the migration code by hand. DAROGA inspects a project folder, writes a report, and on a normal run also writes serverless files onto a new Git branch.
 
-You do **not** need to write code or manually re-architect your infrastructure. DAROGA automatically inspects your application, checks your AWS setup, designs your serverless architecture, generates ready-to-deploy files, and prepares a GitHub Pull Request for your team to review.
+Your current Git branch is checked out again at the end. Live AWS changes are not applied. Publishing the branch is a separate choice (`--push`).
 
 ---
 
-## 1. What DAROGA Does for You
+## 1. What you get
 
-If your organization is running an application 24/7 on an AWS EC2 virtual machine, you are paying for server compute every hour—even when no traffic is arriving. 
+An EC2 instance bills for every hour it is on. Lambda bills per request, and the permanent free tier covers 1,000,000 requests and 3,200,000 GB-seconds per month. API Gateway’s 1,000,000 free HTTP API calls last for the first 12 months.
 
-DAROGA converts that application into **AWS Lambda Serverless**, which means:
-- **Zero Server Management**: You no longer need to maintain Linux instances, patch operating systems, or manage SSH keys.
-- **Pay Only When Used**: AWS provides 1,000,000 requests per month completely **free**. When nobody uses your service, you pay $0.00.
-- **Automatic Instant Scaling**: Your service automatically scales up in milliseconds during high traffic and scales back down to zero.
-- **Safe & Non-Destructive**: DAROGA operates with a **Zero Blast Radius** guarantee. Your existing code on `main` and your live AWS servers are **100% untouched**. Everything is delivered on a separate review branch with a Pull Request.
+DAROGA does not shut down the EC2 instance. The report’s rollback section tells you to keep that instance until you have pointed DNS yourself.
 
-### Legacy EC2 vs. AWS Lambda Comparison
+When DAROGA cannot see a live instance, the cost section is labeled **ESTIMATE**. It does not claim a savings percentage in that situation.
 
 ```mermaid
 flowchart LR
-    subgraph Legacy ["Legacy EC2 Architecture"]
-        direction TB
-        VM["24/7 Running Virtual Machine"] --> Cost1["Billed continuously ($10-$100+/mo)"]
-        VM --> Maint1["Manual OS patches & SSH key management"]
-        VM --> Scale1["Slow scaling (minutes to launch AMI)"]
+    subgraph Legacy ["EC2"]
+        VM["Instance running all month"] --> Bill["On-demand hours plus a 30 GB gp3 volume in the estimate"]
     end
-
-    subgraph Serverless ["Migrated AWS Lambda Architecture"]
-        direction TB
-        Lambda["Event-Driven Serverless Compute"] --> Cost2["$0.00 when idle (1,000,000 Free Requests/mo)"]
-        Lambda --> Maint2["Zero server maintenance (100% managed by AWS)"]
-        Lambda --> Scale2["Sub-second automatic instant scaling"]
+    subgraph Serverless ["Lambda plan"]
+        Fn["Lambda arm64 behind API Gateway HTTP API"] --> Idle["Low traffic priced at 0 dollars inside the Lambda free tier"]
     end
 ```
 
-### 1.1 Business ROI & Market Value
-
-| Metric | Traditional Cloud Migration | DAROGA Autonomous Agent |
+| | Consulting project | This CLI |
 |---|---|---|
-| **Turnaround Time** | 2 to 6 weeks of engineering sprint | **45 seconds** |
-| **DevOps Consulting Cost** | $5,000 to $25,000 | **$0.00** (Open-source CLI) |
-| **Idle Infrastructure Bill** | Continuous 24/7 EC2 hourly rates | **$0.00/month** (100% covered under AWS Lambda free tier) |
-| **Operational Overhead** | OS patching, SSH key rotation, AMI updates | **Zero servers** (AWS fully manages underlying runtime) |
-| **Migration Risk** | High (risk of accidental downtime or live breaks) | **Zero Blast Radius** (100% read-only cloud + isolated Git feature branch) |
+| Time | Days to weeks of engineering | One local command |
+| What is deployed | Often the new stack itself | Nothing in AWS. Files and an optional pull request |
+| Risk to the instance | Depends on the project | Inventory is read-only. Guest checks with `--vm-access` run diagnostic commands only |
+| Risk to Git | Depends on the project | Commits go to `lambda-migration-<timestamp>`. The branch you started on is restored |
 
 ---
 
-## 2. Quick Setup (3 Minutes)
+## 2. Install
 
-### Step 1: Install Python & DAROGA
-Make sure Python 3.10 or higher is installed on your machine. Then open your terminal or PowerShell and run:
+Python 3.10 or newer and Git.
 
 ```bash
-# Clone DAROGA
 git clone https://github.com/dhawalshankar/lambda-agent.git
 cd lambda-agent
-
-# Install dependencies and the daroga command
-pip install -r requirements.txt
-pip install --no-build-isolation -e .
+pip install -e .
 ```
 
-You can now use the `daroga` command from any terminal on your system.
+That install includes the AWS and browser libraries. `pip install -r requirements.txt` installs only the LLM client libraries and is not enough on its own.
+
+Optional, for the extra Playwright check against Chrome:
+
+```bash
+python -m playwright install chromium
+```
+
+The console-tab list works without that step.
 
 ---
 
-## 3. Environment Variables & AI Model Selection for Demos
+## 3. Choosing a model
 
-DAROGA is an **Autonomous AI Agent**. It uses Large Language Model (LLM) reasoning loops to read your codebase, make architectural decisions, write serverless adapters, and validate generated code.
-
-### 🌟 Which AI API Should You Use for Demonstrations?
-
-When demonstrating DAROGA to clients, evaluators, or management, choose based on your goal:
+DAROGA can call a hosted model or skip the network with `--offline`.
 
 ```mermaid
 flowchart TD
-    Start["Demonstration Goal"] --> Choice{"Which model setup?"}
-    
-    Choice -->|"Open-Source (OSS) / Local"| OSS["1. Open-Source GPT / Local<br/>• Ollama: llama3.1 / qwen2.5<br/>• OpenRouter: Free OSS models<br/>• vLLM / LM Studio / Local endpoint"]
-    Choice -->|"Ultra-Fast Cloud Demo"| Groq["2. Hosted OSS (Groq)<br/>• Llama 3.3 70B (300+ tok/s)<br/>• Open-source weights, instant live speed"]
-    Choice -->|"Proprietary Commercial LLM"| Commercial["3. Commercial Frontier<br/>• OpenAI GPT-4o<br/>• Google Gemini 2.0 Flash"]
-    Choice -->|"Air-Gapped / Zero Network"| Offline["4. Offline Engine (--offline)<br/>• 100% deterministic local rules<br/>• Zero keys, zero network calls"]
+    Start["How do you want to run?"] --> Choice{"Pick one"}
+    Choice -->|"Fast hosted default"| Groq["--provider groq<br/>model openai/gpt-oss-120b<br/>needs GROQ_API_KEY"]
+    Choice -->|"OpenAI"| OAI["--provider openai<br/>default model gpt-4o-mini"]
+    Choice -->|"Gemini"| Gem["--provider gemini<br/>default model gemini-4-hydrogen"]
+    Choice -->|"Claude"| Cla["--provider claude<br/>default model claude-3-5-haiku-20241022"]
+    Choice -->|"On this machine"| Local["--provider ollama<br/>or --provider custom --base-url ..."]
+    Choice -->|"No API"| Off["--offline"]
 ```
 
----
+### Groq
 
-### A. The Best Demo Setup: OpenAI GPT-OSS 120B on Groq ⚡ (500+ tok/s)
-
-OpenAI's official open-weight flagship model **`openai/gpt-oss-120b`** (120B parameter Mixture-of-Experts reasoning model) runs hosted on **Groq's LPUs**.
-
-```mermaid
-flowchart LR
-    Demo["Live AI Demo"] --> Groq["Groq LPU Hardware"]
-    Groq --> Model["OpenAI GPT-OSS 120B<br/>(openai/gpt-oss-120b)"]
-    Model --> Win1["Blazing Speed: ~500 tokens/sec"]
-    Model --> Win2["Open-Weight / Open-Source (OSS)"]
-    Model --> Win3["Advanced Agentic & Code Reasoning"]
+```powershell
+$env:GROQ_API_KEY="gsk_your_key"
+daroga "C:\path\to\my-app" --provider groq
 ```
 
-#### Why it is the ultimate demonstration choice:
-1. **Open-Source Sovereignty**: It is an open-weight model (`GPT-OSS 120B`), not a closed proprietary black box.
-2. **Insane Speed (~500 tokens/sec)**: Powered by Groq's LPU, the agent loops and AST inspections execute virtually instantaneously without making the audience wait.
-3. **Advanced Tool-Calling**: Designed specifically for code generation, agentic reasoning, and AWS architecture synthesis.
+That uses `openai/gpt-oss-120b`. Keys: [console.groq.com/keys](https://console.groq.com/keys).
 
-#### How to run it:
-1. Get your free Groq API key from [https://console.groq.com/keys](https://console.groq.com/keys).
-2. Set it in PowerShell:
-   ```powershell
-   $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
-   ```
-3. Run DAROGA (automatically defaults to `openai/gpt-oss-120b`):
-   ```powershell
-   daroga "C:\path\to\my-app"
-   ```
-   Or explicitly pass the model:
-   ```powershell
-   daroga "C:\path\to\my-app" --provider groq --model openai/gpt-oss-120b
-   ```
+If you omit `--provider`, DAROGA picks the first key it finds, in this order: Groq, OpenAI, Gemini, Anthropic, xAI, then `OPENAI_BASE_URL`. With only `GROQ_API_KEY` set, auto mode also uses `openai/gpt-oss-120b`.
 
----
+### OpenAI, Gemini, Claude, xAI
 
-### B. Running Local Open-Source Models (Ollama / vLLM / Local)
-Run Llama 3.1, Qwen 2.5, or DeepSeek locally on your own laptop:
+```powershell
+$env:OPENAI_API_KEY="sk-..."
+daroga "C:\path\to\my-app" --provider openai --model gpt-4o
+
+$env:GEMINI_API_KEY="..."
+daroga "C:\path\to\my-app" --provider gemini
+
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+daroga "C:\path\to\my-app" --provider claude
+
+$env:XAI_API_KEY="xai-..."
+daroga "C:\path\to\my-app" --provider xai
+```
+
+Auto mode (no `--provider`) uses different defaults than the explicit flags: OpenAI `gpt-4o`, Gemini `gemini-2.0-flash`, Claude `claude-3-5-sonnet-20241022`.
+
+### On your own machine
+
 ```bash
-# 1. Install & start Ollama (from ollama.ai), then pull your model:
-ollama run llama3.1:8b
-
-# 2. Run DAROGA pointing to your local Ollama:
 daroga "C:\path\to\my-app" --provider ollama --model llama3.1:8b
 ```
-- **Why use it in a demo?**: Demonstrates 100% data privacy and open-source sovereignty—no company code ever leaves the local machine.
 
-#### 2. Via OpenRouter (Free Open-Source Weights Hosted in the Cloud)
-If you want open-source models like `llama-3.3-70b-instruct` or `qwen-2.5-coder` hosted in the cloud with an OpenAI-compatible API:
-```bash
-# Set OpenRouter key:
-$env:OPENROUTER_API_KEY="sk-or-v1-..."
+Ollama’s default URL is `http://localhost:11434/v1`.
 
-# Run DAROGA with OpenRouter OSS model:
-daroga "C:\path\to\my-app" --provider openrouter --model "meta-llama/llama-3.3-70b-instruct"
+OpenRouter, LM Studio, and vLLM are `--provider custom` plus a base URL. `--provider openrouter` is rejected by the CLI.
+
+```powershell
+$env:OPENROUTER_API_KEY="sk-or-..."
+daroga "C:\path\to\my-app" --provider custom --base-url "https://openrouter.ai/api/v1" --model "meta-llama/llama-3.3-70b-instruct" --api-key $env:OPENROUTER_API_KEY
 ```
 
-#### 3. Via Local LM Studio / vLLM / Custom Local Server
 ```bash
-# Start your local server on port 1234 or 8000, then run:
 daroga "C:\path\to\my-app" --provider custom --base-url "http://localhost:1234/v1" --model "local-model"
 ```
 
----
+### No model
 
-### B. Hosted Open-Source at Maximum Speed: Groq (Llama 3.3 70B)
-If you want to demonstrate an open-source model running at **300+ tokens per second** so the audience doesn't wait:
-- **Windows PowerShell**:
-  ```powershell
-  $env:GROQ_API_KEY="gsk_your_groq_api_key_here"
-  daroga "C:\path\to\my-app"
-  ```
-- Free API key available at [console.groq.com](https://console.groq.com).
-
----
-
-### C. Commercial Frontier Models (OpenAI GPT-4o / Google Gemini)
-
-#### OpenAI (GPT-4o)
-- **Windows PowerShell**:
-  ```powershell
-  $env:OPENAI_API_KEY="sk_your_openai_api_key_here"
-  daroga "C:\path\to\my-app" --provider openai --model gpt-4o
-  ```
-
-#### Google Gemini
-- **Windows PowerShell**:
-  ```powershell
-  $env:GEMINI_API_KEY="AIzaSy_your_gemini_key_here"
-  daroga "C:\path\to\my-app" --provider gemini --model gemini-2.0-flash
-  ```
-
----
-
-### D. Zero-API Offline Mode (Deterministic Static Engine)
-If you don't want to use any AI API at all:
 ```bash
 daroga "C:\path\to\my-app" --offline
 ```
 
-### B. AWS Credentials (Optional, for Live Cloud Inspection)
-If you have the AWS CLI configured on your computer (`aws configure`), DAROGA automatically reads your live EC2 instance details, security groups, and VPC subnets.
+### AWS credentials
 
-- If you don't have AWS credentials configured, **don't worry**—DAROGA will still inspect your repository and build all serverless deliverables using safe defaults.
+If `aws configure` or environment credentials work, DAROGA reads account id, instances, VPCs, and security groups. If they do not, the report still generates and the cost block is marked as an estimate.
 
 ---
 
-## 4. How to Run DAROGA (Every Possible Command)
+## 4. Commands
 
-DAROGA works directly on your project folder **without needing you to copy or move files**. Just point it to your project path:
+The folder must be a clean Git tree, or a plain folder (DAROGA will run `git init` and make a first commit). If you already have uncommitted work, commit or stash it first.
 
-### 1. The Standard Command (Audit + Code + Local Feature Branch)
-This runs the full autonomous migration pipeline on your local machine with zero blast radius:
-1. It inspects your application architecture and live EC2 cloud infrastructure.
-2. Synthesizes all serverless adapters, SAM templates, and console deployment guides.
-3. Creates an isolated migration feature branch (`lambda-migration-<timestamp>`).
-4. Commits all generated deliverables safely to the feature branch locally without modifying your remote repository.
+### Standard run
 
 ```bash
 daroga "C:\Users\YourName\Desktop\code\my-application"
 ```
 
----
+1. Scans the project, Chrome if port 9222 is open, and AWS if credentials work.
+2. Writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`.
+3. Writes the Lambda adapter, `template.yaml`, and `USER.md`.
+4. Commits them on `lambda-migration-<timestamp>`.
+5. Returns you to the branch you were on. The new commit is local until you push.
 
-### 2. Full Autonomous Migration with Automated Push & Pull Request (`--push`)
-If you want DAROGA to automatically publish the branch to GitHub/GitLab and output a ready-to-merge Pull Request:
+### Publish a pull request
 
 ```bash
-# Push branch & output live GitHub Pull Request automatically:
 daroga "C:\Users\YourName\Desktop\code\my-application" --push
 ```
-- Pushes the feature branch to your Git remote (`origin`).
-- Autonomously raises a live GitHub Pull Request or outputs the direct 1-click PR link for your team to review and merge!
 
----
+Pushes to `origin` and runs GitHub CLI `gh pr create` against the branch you started from. Without `gh`, you get a link that opens GitHub’s compare page (or GitLab’s, when the remote is GitLab).
 
-### 3. Live In-Guest EC2 VM Telemetry (`--vm-access`)
-If you want DAROGA to look inside your running EC2 instance to discover active background processes, open network sockets, and running services:
+### Look inside the EC2 instance
 
 ```bash
 daroga "C:\path\to\my-application" --vm-access
 ```
-- **How It Works**: Connects securely via AWS Systems Manager (SSM) or automatically auto-discovers your `.pem` key from `~/.ssh/`.
-- **Safety**: 100% read-only. Runs `uname`, `ps`, and `ss -tulpn` without altering any files on your virtual machine.
-- **Benefit**: Ensures the generated AWS Lambda configuration includes the exact environment variables, ports, and memory capacity used in production.
 
----
+This runs only on a full migration, and only if an instance was found. It tries AWS Systems Manager first, then SSH. The default SSH user is `ubuntu`, and that default also tries `ec2-user` and `root`. The commands collected are things like `ss`, `ps`, `systemctl`, `docker ps`, and `df`. They are passed to the code generator. They are not a separate chapter of the 23-section report.
 
-### 4. The "Report Only" Command (No Code Changes, No Git Push)
-Use this if you just want an executive feasibility report and cost breakdown to present to your manager, without modifying code or touching Git:
+```bash
+daroga "C:\path\to\my-application" --vm-access --ssh-key "$HOME\.ssh\my-key.pem" --ssh-user ec2-user
+```
+
+### Report only
 
 ```bash
 daroga "C:\path\to\my-application" --audit-only
 ```
-- **Result**: Generates an authoritative `EC2_TO_LAMBDA_MIGRATION_REPORT.md` report in your folder. Leaves all code completely untouched.
 
----
+Writes the report and stops. No new branch and no serverless files. `--vm-access` is ignored in this mode. The new report is an untracked file; the next full run removes that untracked report automatically if it is the only leftover of that name.
 
-### 5. The 100% Free Offline Mode (Zero API Calls, Zero Cost)
-Use this if you do not have an OpenAI or Groq API key, or if your company policy prohibits sending code to external AI APIs:
+### Region, Chrome, offline
 
 ```bash
+daroga "C:\path\to\my-application" --region us-east-1
 daroga "C:\path\to\my-application" --offline
 ```
-- **Result**: Uses DAROGA's built-in static architecture engine. Runs instantly with zero external network calls.
+
+Chrome, optional:
+
+```text
+chrome.exe --remote-debugging-port=9222
+```
+
+Then run `daroga` while the AWS console is open in that window. If the tab URL contains `region=`, and you did not pass `--region`, that region is the one DAROGA queries.
 
 ---
 
-### 5. Inspecting Your Live AWS Console via Google Chrome
-If you are logged into your AWS Management Console in Chrome, DAROGA can inspect your open console tabs (EC2 dashboard, VPCs, Lambda) in read-only mode:
-
-1. Close Chrome, then start it with remote debugging:
-   - **Windows**: `chrome.exe --remote-debugging-port=9222`
-   - **Mac**: `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222`
-2. Open your AWS Console tab in that Chrome window.
-3. Run DAROGA:
-   ```bash
-   daroga "C:\path\to\my-application"
-   ```
-DAROGA will automatically read your open console pages and include live findings in your report!
-
----
-
-## 5. What You Receive (Deliverables Explained Simply)
+## 5. Files after a full run
 
 ```mermaid
 flowchart TD
-    Run["1. Run Single Command:<br/>daroga /path/to/project"] --> Inspect["2. DAROGA Audits Code, AWS & Console"]
-    Inspect --> Gen["3. DAROGA Generates 5 Deliverables"]
-    
-    subgraph Deliverables ["Generated Migration Deliverables"]
-        Gen --> D1["GitHub Pull Request Link (1-Click Merge)"]
-        Gen --> D2["USER.md (AWS Console Setup Instructions)"]
-        Gen --> D3["EC2_TO_LAMBDA_MIGRATION_REPORT.md (23-Section Audit)"]
-        Gen --> D4["template.yaml (Automated 1-Click SAM Deploy)"]
-        Gen --> D5["Serverless Adapters (lambda_main.go / py / js)"]
-    end
-
-    Deliverables --> Review["4. Your Team Reviews Pull Request & Merges"]
-    Review --> Live["5. Deploy to AWS & Enjoy 100% Free Idle Compute!"]
+    Run["daroga /path/to/project"] --> Audit["Report is written during the audit"]
+    Audit --> Gen["Adapter, template.yaml, and USER.md"]
+    Gen --> Branch["Commit on lambda-migration-timestamp"]
+    Branch --> You{"--push?"}
+    You -- "Yes" --> PR["Pull request URL"]
+    You -- "No" --> Local["Commit stays on your machine"]
+    PR --> Back["Your previous branch is checked out"]
+    Local --> Back
 ```
 
-When DAROGA finishes, you receive 5 key deliverables:
-
-| Deliverable | What It Is | Who It Is For |
-|---|---|---|
-| **GitHub Pull Request URL** | A link printed in your terminal (e.g. `https://github.com/.../pull/new/...`). Click it to review and merge all changes with one click. | Engineering Team & Management |
-| **`USER.md`** | A non-technical guide showing you exact click-by-click instructions on the AWS Management Console to turn your service live. | Cloud Admin / SysAdmin |
-| **`EC2_TO_LAMBDA_MIGRATION_REPORT.md`** | A 23-section comprehensive audit covering architecture suitability, security, and exact monthly cost savings. | CTO, Cloud Architect, & Finance |
-| **`template.yaml` (AWS SAM)** | An automated Infrastructure-as-Code file. You can deploy your entire service in 1 command: `sam deploy --guided`. | DevOps Engineers |
-| **Serverless Runtime Adapter** | Ready-to-run Lambda files (`lambda_main.go` for Go, `lambda_function.py` for Python, or `lambda.js` for Node.js). | Developers |
-
----
-
-## 6. Summary Cheat Sheet
-
-| I want to... | Command to run |
+| File | What it is |
 |---|---|
-| Standard migration (Audit, Code & Local Feature Branch Commit) | `daroga "C:\path\to\project"` |
-| Full migration with automated GitHub push & Pull Request link | `daroga "C:\path\to\project" --push` |
-| Deep In-Guest VM telemetry (listening ports, services, Docker) | `daroga "C:\path\to\project" --vm-access` |
-| Get only the executive assessment report (Read-only) | `daroga "C:\path\to\project" --audit-only` |
-| Run for free with no AI API key (Offline Heuristic Mode) | `daroga "C:\path\to\project" --offline` |
-| Specify an AWS region | `daroga "C:\path\to\project" --region us-east-1` |
-| Inspect open Chrome AWS Console tabs | Open Chrome on port 9222, then run `daroga "C:\path\to\project"` |
+| Pull request URL | Printed only with `--push` |
+| `USER.md` | Console and `sam deploy --guided` steps |
+| `EC2_TO_LAMBDA_MIGRATION_REPORT.md` | 23-section audit. Section 1 is the verdict. Section 18 is cost. Section 16 is the console clicks |
+| `template.yaml` | SAM template. You deploy it; DAROGA does not |
+| `lambda_main.go`, `lambda_function.py`, or `lambda.js` | The new handler, under `backend/` when the repo has that folder |
+
+Switch to the generated commit when you want to read it:
+
+```bash
+git checkout lambda-migration-<timestamp>
+git diff <your-old-branch>..lambda-migration-<timestamp> --stat
+```
 
 ---
 
-## 7. Need Help or Support?
-- Your original `main` branch is **always 100% safe and untouched**.
-- You can review any changes before deploying using:
-  ```bash
-  git diff main..lambda-migration-<timestamp> --stat
-  ```
-- To switch to the generated migration files on your computer:
-  ```bash
-  git checkout lambda-migration-<timestamp>
-  ```
+## 6. Cheat sheet
+
+| Goal | Command |
+|---|---|
+| Audit, generate files, commit locally | `daroga "C:\path\to\project"` |
+| Also push and open a PR | `daroga "C:\path\to\project" --push` |
+| Guest ports and services | `daroga "C:\path\to\project" --vm-access` |
+| Report only | `daroga "C:\path\to\project" --audit-only` |
+| No model API | `daroga "C:\path\to\project" --offline` |
+| Force a region | `daroga "C:\path\to\project" --region us-east-1` |
+| Read an open AWS console | Start Chrome with `--remote-debugging-port=9222`, then `daroga "C:\path\to\project"` |
+
+The branch you launched from is checked out when the command finishes. Review the migration branch before anyone deploys.

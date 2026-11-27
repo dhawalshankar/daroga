@@ -1,141 +1,166 @@
 # Product Requirements Document: DAROGA (v2.0)
+
 ## Autonomous EC2 to AWS Lambda Migration Auditor & Planning Agent
 
 | Attribute | Specification |
 |---|---|
 | **Product Name** | **DAROGA** |
-| **CLI Commands** | `daroga`, `aws-migrator`, `aws_migrator` |
-| **Status** | Production v2.0 |
-| **Scope** | **AWS EC2 to AWS Lambda ONLY** |
-| **Target Runtime** | AWS Lambda Graviton (`arm64`), Amazon API Gateway HTTP API v2, AWS SAM |
-| **Inspection Modalities** | Deterministic AST, Boto3 AWS CLI, Playwright Chrome DevTools Protocol (CDP) |
-| **Deliverables** | 23-Section Audit Report, Serverless Adapters, AWS SAM Template, Operator Guide, Git PR |
+| **CLI Commands** | `daroga`, `aws-migrator`, `aws_migrator` → `agent:daroga_main` |
+| **Package version** | `2.0.0` (`pyproject.toml`, `daroga/__init__.py`) |
+| **Python** | `>=3.10` |
+| **Scope** | Plan a move from an EC2-hosted HTTP service to AWS Lambda. Container, WebSocket, disk, and cron findings become decoupling conditions on that plan |
+| **Target runtime** | Lambda `arm64`: `provided.al2023` (Go), `python3.12` (Python), `nodejs20.x` (Node). Ingress: API Gateway HTTP API v2. IaC: AWS SAM |
+| **Inspection** | Repository scanner, boto3/AWS CLI read-only inventory, CDP tab list, optional Playwright attach, optional SSM/SSH guest script |
+| **Deliverables** | `EC2_TO_LAMBDA_MIGRATION_REPORT.md`, language adapter, Go `build_lambda.sh`, `template.yaml`, `USER.md`, optional GitHub or GitLab pull request |
 
 ---
 
 ## 1. Executive Summary
 
-Enterprise cloud teams spend substantial engineering hours auditing, refactoring, and migrating legacy web applications running continuously on AWS EC2 instances into event-driven serverless architectures. 
-
-**DAROGA** is an autonomous cloud engineering auditor and migration agent. Given any local repository path, DAROGA independently inspects the codebase, assesses compatibility with AWS Lambda execution limits, audits live AWS cloud infrastructure in read-only mode, inspects open AWS Console tabs via Chrome DevTools Protocol (CDP), synthesizes an authoritative **23-section architecture audit report**, authors production-ready serverless runtime adapters and AWS SAM infrastructure definitions, commits the deliverables onto an isolated Git feature branch, pushes to the remote repository, and outputs a ready-to-merge GitHub Pull Request link.
+Given a local directory, DAROGA inspects the codebase and the caller’s AWS account, writes a 23-section report, and on a full run generates serverless files on a new Git branch. `--push` publishes that branch and attempts `gh pr create`. The branch that was checked out at start is restored afterward.
 
 ---
 
-## 2. Strict Scope: EC2 → AWS Lambda ONLY
+## 2. Scope
 
-DAROGA has one singular purpose: **Assess how the user's specific existing EC2-hosted application can be migrated to AWS Lambda.**
+### In scope
 
-### In-Scope
-- Moving continuous HTTP/REST services from EC2 VMs to AWS Lambda (ARM64 Graviton) backed by Amazon API Gateway HTTP API v2.
-- In full-stack monorepos with `frontend/` and `backend/`, isolating and migrating the `backend/` server.
-- Decoupling asynchronous or batch worker jobs to AWS SQS or worker queues while hosting public API routes on AWS Lambda.
-- Read-only inspection of live EC2 instances, VPC subnets, Security Groups, and IAM instance profiles.
-- Read-only inspection of active AWS Management Console tabs via CDP.
-- Read-only in-guest VM inspection (`--vm-access`) via AWS Systems Manager (SSM) Run Command or Direct SSH execution to audit live listening ports (`ss -tulpn`), active services, and OS distribution.
-- Generation of the comprehensive 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md`.
-- Authoring human-operator manuals (`USER.md`) detailing AWS Console clicks and CLI commands.
+- HTTP/REST services on EC2 moving to Lambda arm64 and API Gateway HTTP API.
+- Monorepos: `backend/` wins over a sibling `frontend/` as `target_service_directory`.
+- Scanner coverage for Go, Python, JavaScript, TypeScript, Java, and Rust. Adapter generation is implemented for Go, Python, and Node.
+- Read-only AWS inventory: STS caller identity, EC2 instances, VPCs, subnets, security groups, and up to 10 IAM roles. Multi-region instance search across the candidate list in `EC2Inspector` when the first region is empty.
+- CDP inspection of an already-open Chrome, including region discovery for the AWS call.
+- `--vm-access` / `--ssh-key` guest diagnostics on the full migration path, fed to the model prompt.
+- The 23-section report produced by `report_generator.py` (headings in the README).
+- `USER.md` and `template.yaml`.
+- Isolated branch `lambda-migration-<timestamp>`, opt-in push, `gh pr create` with a compare-URL fallback.
+- `--offline` deterministic writer.
+- Verdicts: `MIGRATE (FULLY COMPATIBLE)`, `MIGRATE (WITH CODE MODIFICATIONS)`, `MIGRATE (WITH DECOUPLING)`, `NOT RECOMMENDED`.
 
-### Explicitly Out-of-Scope (Non-Goals)
-- Deflecting compute workloads to ECS, EKS, or App Runner as the primary recommendation.
-- General cloud optimizations or unrelated security audits.
-- Mutating live AWS infrastructure directly (zero blast radius; all deployments are human-reviewed).
-- Modifying frontend client applications.
+### Out of scope
+
+- Calling `sam deploy`, `lambda:CreateFunction`, `ec2:RunInstances`, or any other mutating deploy API.
+- Replacing the primary recommendation with ECS, EKS, or App Runner. ECS Fargate and AWS Batch appear only as the worker for Docker-in-app execution. API Gateway WebSocket API appears only as the WebSocket redesign.
+- Rewriting frontend application code. `USER.md` may show a `NEXT_PUBLIC_API_URL` assignment.
+- Editing the user’s Git config. Author identity is passed with per-command `git -c`.
+
+### Decoupling conditions the engine records
+
+| Detection | Condition text direction |
+|---|---|
+| Docker execution | Public API stays on Lambda. Container runs move to ECS Fargate or AWS Batch via SQS or EventBridge |
+| WebSockets | API Gateway WebSocket API plus DynamoDB connection state |
+| SQLite or local files | S3, DynamoDB, or RDS |
+| In-process cron | EventBridge Scheduler |
 
 ---
 
-## 3. Core Architecture & Pipeline
+## 3. Pipeline
 
 ```mermaid
 flowchart TD
-    Repo["Target External Repository (Local Path)"] --> CleanCheck{"Git Status Clean?"}
-    CleanCheck -- "No" --> Abort["Halt: Uncommitted changes present"]
-    CleanCheck -- "Yes" --> Spawn["Spawn Feature Branch: lambda-migration-<timestamp>"]
+    Repo["Local path"] --> Clean{"Directory exists and Git tree is clean? Init Git if there is no repo"}
+    Clean -- "No" --> Abort["Exit 1"]
+    Clean -- "Yes" --> Mode{"--audit-only?"}
+    Mode -- "No" --> Spawn["checkout -b lambda-migration-timestamp"]
+    Mode -- "Yes" --> S1
+    Spawn --> S1
 
-    subgraph Pipeline ["DAROGA 11-Stage Deterministic Pipeline"]
-        Spawn --> S1["1. Repository AST Scan (Go, Python, Node, Dockerfiles)"]
-        S1 --> S2["2. Live AWS Cloud Audit (Boto3 STS, EC2, VPC, SecGroups)"]
-        S2 --> S3["3. Browser CDP Console Check (Playwright :9222)"]
-        S3 --> S4["4. Lambda Compatibility & Limits Engine"]
-        S4 --> S5["5. Target Architecture Mapping (Graviton arm64 + API GW)"]
-        S5 --> S6["6. Comparative Cost Estimation (EC2 vs. Lambda Free Tier)"]
-        S6 --> S7["7. Generate 23-Section EC2_TO_LAMBDA_MIGRATION_REPORT.md"]
-        S7 --> S8["8. Synthesize Serverless Adapter (lambda_main.go / py / js)"]
-        S8 --> S9["9. Generate Linux ARM64 Build Script (build_lambda.sh)"]
-        S9 --> S10["10. Author AWS SAM Template (template.yaml)"]
-        S10 --> S11["11. Author Operator Guide (USER.md) & Executive Summary"]
+    subgraph Pipeline ["Audit then optional generation"]
+        S1["1. Repository scan"] --> S2["2. CDP tab list and region hint"]
+        S2 --> S3["3. AWS inventory, with candidate-region search"]
+        S3 --> S4["4. Compatibility verdict"]
+        S4 --> S5["5. Architecture map"]
+        S5 --> S6["6. Cost estimate"]
+        S6 --> S7["7. 23-section report"]
+        S7 --> S8{"Full run?"}
+        S8 -- "Yes" --> S9["8. Optional SSM/SSH guest telemetry"]
+        S9 --> S10["9. Model codegen or offline writer"]
     end
 
-    subgraph GitFlow ["Git Automation & Zero Blast Radius"]
-        S11 --> Stage["Stage All 6 Deliverables"]
-        Stage --> Commit["Commit to Feature Branch"]
-        Commit --> Push["Push Feature Branch to Remote (origin)"]
-        Push --> PR["Construct Direct GitHub Pull Request URL"]
-        PR --> Restore["Restore Local Workspace to main (100% Untouched)"]
+    subgraph GitFlow ["After generation, including on failure paths that still reach finally"]
+        S10 --> Commit["Commit when the migration branch is dirty"]
+        Commit --> Push{"--push?"}
+        Push -- "Yes" --> PR["push, gh pr create, else compare URL"]
+        Push -- "No" --> Restore
+        PR --> Restore["checkout starting branch"]
+        S8 -- "audit-only" --> Done["Return on the starting branch with the report untracked"]
     end
 ```
 
-### 3.1 Operator Review & Merge Sequence
+### 3.1 Operator sequence for a full run with `--push`
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Operator as Cloud Operator / DevOps
-    participant CLI as DAROGA CLI
-    participant Repo as Local Git Repository
-    participant Remote as GitHub Remote (origin)
-    participant AWS as AWS Management Console
+    actor Operator
+    participant CLI as daroga
+    participant Repo as Target Git repo
+    participant AWS as AWS read-only APIs
+    participant Remote as origin
+    participant GH as gh pr create
 
-    Operator->>CLI: Execute daroga /path/to/project
-    CLI->>Repo: Create & checkout lambda-migration-<timestamp>
-    CLI->>Repo: Generate report, serverless code, template.yaml, USER.md
-    CLI->>Repo: Stage & commit all 6 deliverables
-    CLI->>Remote: Push feature branch to origin
-    CLI->>Repo: Restore original branch (main)
-    CLI-->>Operator: Display GitHub PR URL & review instructions
-    Operator->>Remote: Review diff and merge Pull Request
-    Operator->>AWS: Follow USER.md to configure Console & deploy via SAM
+    Operator->>CLI: daroga /path --push
+    CLI->>Repo: checkout -b lambda-migration-timestamp
+    CLI->>AWS: STS, EC2, VPC, security groups, IAM ListRoles
+    CLI->>Repo: write report, adapter, template.yaml, USER.md
+    CLI->>Repo: commit
+    CLI->>Remote: push -u origin migration-branch
+    CLI->>GH: pr create --base starting branch --head migration branch
+    CLI->>Repo: checkout starting branch
+    CLI-->>Operator: PR URL, verdict, conditions
+    Operator->>Remote: Review and merge
+    Operator->>AWS: sam deploy or the steps in USER.md
 ```
+
+`--push` is opt-in. The default run stops before the remote.
 
 ---
 
 ## 4. Functional Requirements
 
-| ID | Requirement | Priority | Implementation Component |
+| ID | Requirement | Priority | Implementation |
 |---|---|---|---|
-| **FR-1** | Accept any local repository path without copying files into the tool directory | P0 | `agent.py` CLI parser |
-| **FR-2** | Check git status and enforce a clean working tree before proceeding | P0 | `agent.is_git_clean` |
-| **FR-3** | Monorepo detection: Automatically scope migration to `backend/` if monorepo detected | P0 | `daroga.repository_scanner` |
-| **FR-4** | Live AWS EC2 & VPC inspection via read-only Boto3 / AWS CLI | P0 | `daroga.ec2_inspector` |
-| **FR-5** | Live AWS Console inspection via Chrome DevTools Protocol (`http://127.0.0.1:9222`) | P0 | `daroga.browser_inspector` |
-| **FR-6** | Compatibility evaluation against AWS Lambda runtime limits (15 min, 6MB, ephemeral disk) | P0 | `daroga.lambda_compatibility` |
-| **FR-7** | Produce authoritative 23-section `EC2_TO_LAMBDA_MIGRATION_REPORT.md` | P0 | `daroga.report_generator` |
-| **FR-8** | Generate production serverless runtime adapters (`lambda_main.go`, `lambda_function.py`, `lambda.js`) | P0 | `agent.run_offline_analysis` |
-| **FR-9** | Generate cross-compilation build scripts for ARM64 Graviton (`build_lambda.sh`) | P0 | `agent.run_offline_analysis` |
-| **FR-10** | Generate production-ready AWS SAM template (`template.yaml`) | P0 | `agent.run_offline_analysis` |
-| **FR-11** | Generate step-by-step human operator manual for AWS Console (`USER.md`) | P0 | `agent.run_offline_analysis` |
-| **FR-12** | Automatic feature branch creation (`lambda-migration-<timestamp>`) | P0 | `agent.daroga_main` |
-| **FR-13** | Automatic remote push (`git push -u origin <branch>`) with Pull Request URL generation | P0 | `agent.daroga_main` |
-| **FR-14** | Zero Blast Radius: Local working tree on `main` remains 100% clean and untouched | P0 | `agent.daroga_main` |
-| **FR-15** | Autonomous Offline Heuristic Engine (Zero-API, zero-cost mode) | P0 | `agent.run_offline_analysis` |
+| FR-1 | Accept a local path and operate in that tree | P0 | `repo` argument, default `.` |
+| FR-2 | Refuse a dirty work tree | P0 | `is_git_clean`. Untracked `EC2_TO_LAMBDA_MIGRATION_REPORT.md` is deleted first |
+| FR-3 | Initialize Git when the directory is not a repository | P0 | `git init` plus an initial commit |
+| FR-4 | Scope monorepos to `backend/` when present | P0 | `RepositoryScanner` |
+| FR-5 | Read-only EC2, VPC, subnet, security group, and IAM role inventory, with candidate-region fallback | P0 | `EC2Inspector` |
+| FR-6 | Read Chrome CDP tabs and adopt `region=` when `--region` is empty | P0 | `BrowserInspector`, called before AWS |
+| FR-7 | Score Lambda limits and emit one of the four verdicts | P0 | `LambdaCompatibilityEngine` |
+| FR-8 | Write the 23-section report | P0 | `ReportGenerator` |
+| FR-9 | On a full run, generate an adapter, SAM template, and `USER.md` | P0 | `run_agent_loop`, failover `run_offline_analysis` |
+| FR-10 | Go builds target Linux arm64 `bootstrap` | P0 | `build_lambda.sh` from the offline writer and the system prompt |
+| FR-11 | Create `lambda-migration-<timestamp>` and restore the starting branch | P0 | `daroga_main` `finally` |
+| FR-12 | Push and open a PR only with `--push` | P0 | `raise_pull_request` |
+| FR-13 | `--offline` performs no model HTTP call | P0 | `run_offline_analysis` |
+| FR-14 | `--audit-only` writes the report and does not branch, inspect the guest, or generate code | P0 | early return in `daroga_main` |
+| FR-15 | `--vm-access` collects guest telemetry for the model prompt on full runs | P1 | `VMInspector` |
+| FR-16 | Cost output says ESTIMATE when no instance was found, and does not print a savings percent in that case | P0 | `CostEstimator` |
 
 ---
 
-## 5. Security & Safety Controls
+## 5. Security Controls
 
-1. **Zero Cloud Mutation**: DAROGA never issues mutating AWS API calls. It holds read-only privileges (`sts:GetCallerIdentity`, `ec2:DescribeInstances`, `ec2:DescribeVpcs`, `ec2:DescribeSecurityGroups`).
-2. **Main Branch Inviolability**: The agent is programmatically blocked from committing directly to `main` or `master`. All work occurs inside an ephemeral feature branch.
-3. **No Sensitive Data Leaks**: CDP browser inspections only read document titles and URLs of AWS Console tabs. Passwords, session cookies, and authentication tokens are never recorded or written to disk.
-4. **Sandboxed Command Execution**: Internal validations are limited strictly to safe linters and compilers (`py_compile`, `go build`, `sam validate`).
+1. Inventory calls are `GetCallerIdentity`, `DescribeInstances`, `DescribeVpcs`, `DescribeSubnets`, `DescribeSecurityGroups`, and `ListRoles`. Deploy APIs are not invoked.
+2. Guest inspection, when enabled, uses SSM `SendCommand` or SSH with a fixed read-only script.
+3. Commits happen on the migration branch. The starting branch is checked out in `finally`.
+4. CDP persistence is titles and URLs.
+5. Model writes go through `safe_resolve_path`. The codegen tool list is `write_file` and `finish`.
+6. The allow-listed shell prefixes in `agent.py` are not on the codegen tool list. They remain in the file for the unused `run_command` tool.
 
 ---
 
-## 6. Deliverable Artifacts Matrix
+## 6. Artifact Matrix
 
-| Artifact | Location | Purpose |
+| Artifact | Location | Produced by |
 |---|---|---|
-| `EC2_TO_LAMBDA_MIGRATION_REPORT.md` | Repository Root | Comprehensive 23-section architecture audit and feasibility evaluation. |
-| `lambda_main.go` / `lambda_function.py` | `backend/` or Root | Production serverless HTTP adapter proxying API Gateway events. |
-| `build_lambda.sh` | `backend/` or Root | Cross-compilation script targeting Amazon Linux 2023 Graviton (`arm64`). |
-| `template.yaml` | Repository Root | AWS SAM template declaring API Gateway v2, Lambda functions, and IAM policies. |
-| `USER.md` | Repository Root | Click-by-click AWS Management Console guide for DevOps engineers. |
-| `MIGRATION_REPORT.md` | Repository Root | Executive summary of architectural delta and cost savings. |
+| `EC2_TO_LAMBDA_MIGRATION_REPORT.md` | Repo root, or `--output` | Every audit, including `--audit-only` |
+| `lambda_main.go`, `build_lambda.sh` | Target service directory | Full run, Go |
+| `lambda_function.py` | Target service directory | Full run, Python |
+| `lambda.js` | Target service directory | Full run, Node |
+| `template.yaml` | Repo root | Full run. Offline runtime id follows the note in ARCHITECTURE.md |
+| `USER.md` | Repo root | Full run |
+| Pull request | GitHub via `gh`, or a compare URL | `--push` only |
+
+`lambda_app/MIGRATION_REPORT.md` and `lambda_app/USER.md` document the bundled reference service. They are not CLI outputs. That reference stack’s `template.yaml` pins Python 3.11. Generator output for new Python services uses `python3.12`.

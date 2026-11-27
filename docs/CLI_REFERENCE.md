@@ -1,164 +1,233 @@
 # DAROGA CLI Command Reference
 
-This document provides a comprehensive command-line reference for the `daroga` CLI (and its aliases `aws-migrator` / `aws_migrator`).
+Command-line reference for `daroga`, `aws-migrator`, and `aws_migrator`. All three entry points call `agent.daroga_main`.
 
 ---
 
-## 1. Syntax Overview
+## 1. Syntax
 
 ```bash
 daroga [REPOSITORY_PATH] [FLAGS]
+python agent.py [REPOSITORY_PATH] [FLAGS]
 ```
 
-Or using the platform wrappers:
-- **Windows**: `daroga`, `.\daroga`, `aws-migrator`, `.\aws-migrator.cmd`
-- **Linux / macOS**: `daroga`, `aws-migrator`
-- **Python**: `python agent.py [REPOSITORY_PATH] [FLAGS]`
+Windows wrappers in the repo root: `daroga.cmd`, `aws-migrator.cmd`, `aws_migrator.cmd`. Unix-style shims: `aws-migrator`, `aws_migrator`.
 
-### CLI Execution Decision Tree
+### Execution flow
 
 ```mermaid
 flowchart TD
-    Start["User Runs: daroga [repo] [flags]"] --> RepoCheck{"Valid Git Repo & Clean Working Tree?"}
-    RepoCheck -- "No" --> Error["Halt & Prompt Commit/Stash"]
-    RepoCheck -- "Yes" --> AuditCheck{"Is --audit-only set?"}
+    Start["daroga [repo] [flags]"] --> Exists{"Directory exists?"}
+    Exists -- "No" --> Exit1["Exit 1"]
+    Exists -- "Yes" --> Git{"Inside a Git work tree?"}
+    Git -- "No" --> Init["git init, git add -A, initial commit"]
+    Git -- "Yes" --> Stray
+    Init --> Stray["Delete untracked EC2_TO_LAMBDA_MIGRATION_REPORT.md if status lists it"]
+    Stray --> Clean{"git status --porcelain empty?"}
+    Clean -- "No" --> Exit1b["Exit 1: commit or stash"]
+    Clean -- "Yes" --> AuditOnly{"--audit-only or --audit?"}
 
-    AuditCheck -- "Yes" --> ReadOnly["Run Deterministic Audit<br/>• Output EC2_TO_LAMBDA_MIGRATION_REPORT.md<br/>• Zero Code Changes & Zero Git Mutations"]
-    ReadOnly --> End1["Audit Complete (Exit 0)"]
+    AuditOnly -- "Yes" --> ReadOnly["run_audit and write the report. Return"]
+    ReadOnly --> End0["Exit 0. No branch and no codegen"]
 
-    AuditCheck -- "No" --> Branch["Spawn Feature Branch: lambda-migration-<timestamp>"]
-    Branch --> RunAudit["Execute Deep DAROGA Audit"]
-    RunAudit --> ModeCheck{"Is --offline set?"}
+    AuditOnly -- "No" --> Branch["checkout -b lambda-migration-YYYYMMDD-HHMMSS"]
+    Branch --> Deep["run_audit"]
+    Deep --> VM{"--vm-access or --ssh-key, and an instance was found?"}
+    VM -- "Yes" --> Guest["VMInspector SSM, then SSH"]
+    VM -- "No" --> Mode
+    Guest --> Mode{"--offline or resolved provider is offline?"}
 
-    ModeCheck -- "Yes" --> OfflineEngine["Run Autonomous Heuristic Architecture Engine"]
-    ModeCheck -- "No" --> LLMEngine["Run AI Reasoning Engine (Groq / OpenAI / Gemini)"]
+    Mode -- "Yes" --> Offline["run_offline_analysis"]
+    Mode -- "No" --> LLM["UnifiedAIClient + run_agent_loop"]
+    LLM --> Complete{"Adapter, template.yaml, and USER.md on disk?"}
+    Complete -- "No" --> Offline
+    Complete -- "Yes" --> Commit
+    Offline --> Commit["Commit on the migration branch when the tree is dirty"]
 
-    OfflineEngine & LLMEngine --> CodeGen["Generate Deliverables:<br/>• lambda_main adapter<br/>• build_lambda.sh<br/>• template.yaml (SAM)<br/>• USER.md & MIGRATION_REPORT.md"]
-
-    CodeGen --> Stage["Stage & Commit to lambda-migration-*"]
-    Stage --> PushCheck{"Is --push enabled? (Default: No)"}
-
-    PushCheck -- "Yes (--push)" --> Push["git push -u origin <branch><br/>• Construct 1-Click GitHub PR URL"]
-    PushCheck -- "No (default)" --> LocalOnly["Keep Changes Local on Feature Branch"]
-
-    Push & LocalOnly --> Restore["Restore Active Workspace to main (100% Untouched)"]
-    Restore --> Summary["Print Execution Summary & PR Link"]
+    Commit --> Push{"--push?"}
+    Push -- "Yes" --> Remote{"--remote exists?"}
+    Remote -- "Yes" --> PushCmd["git push -u remote branch"]
+    PushCmd --> GH["gh pr create, else GitHub or GitLab compare URL"]
+    Remote -- "No" --> Stay["Leave the commit local and warn"]
+    Push -- "No" --> Hint["Print git push and gh pr create"]
+    GH --> Restore
+    Stay --> Restore
+    Hint --> Restore["checkout the starting branch"]
+    Restore --> Empty{"No commits on the migration branch?"}
+    Empty -- "Yes" --> Drop["git branch -D migration branch"]
+    Empty -- "No" --> Summary["Print verdict, conditions, blockers, branch status"]
+    Drop --> Summary
 ```
 
 ---
 
-## 2. Arguments & Options
+## 2. Arguments
 
-### Positional Arguments
-- `repo` *(Optional, Default: `.`)*: The absolute or relative file path to the local Git repository you want to inspect and migrate.
+### Positional
 
-### Git & Remote Options
-- `--push`: *(Opt-in, Default: Disabled)* Automatically stages all generated artifacts, commits to an isolated feature branch (`lambda-migration-<timestamp>`), pushes to the remote Git repository, and prints the GitHub Pull Request URL.
-- `--no-push`: *(Default: Enabled)* Keeps changes staged and committed strictly to the local feature branch without touching the remote repository.
-- `--remote <NAME>`: *(Default: `origin`)* Name of the remote Git repository to push to.
+- `repo` — directory to migrate. Default `.`. Resolved to an absolute path. If it is not a Git work tree, the CLI runs `git init`, `git add -A`, and commits `chore: initial commit before Lambda migration`.
 
-### Audit & Inspection Options
-- `--audit-only` (or `--audit`): Runs the complete deterministic inspection and outputs `EC2_TO_LAMBDA_MIGRATION_REPORT.md` **without** generating code, modifying files, or creating Git branches. Completely read-only.
-- `--vm-access`: Enables live, non-destructive in-guest VM inspection via AWS Systems Manager (SSM) Run Command or Direct SSH execution. Discovers real listening sockets (`ss -tulpn`), active systemd services, installed runtime environments, Docker containers, and filesystem paths.
-- `--ssh-key <PATH>`: Explicit path to the private SSH key (`.pem`) used to authenticate for direct in-guest VM inspection. If omitted when `--vm-access` is enabled, candidate `.pem` keys are auto-discovered from `~/.ssh/` and `~/Downloads/`.
-- `--ssh-user <USER>`: Remote SSH user for VM access (default: auto-detected, typically `ec2-user`, `ubuntu`, or `admin`).
-- `--region <REGION>`: Explicit AWS region to inspect (e.g. `us-east-1`, `eu-west-1`). Defaults to `AWS_REGION`, `AWS_DEFAULT_REGION`, or `us-east-1`.
-- `--instance-id <INSTANCE_ID>`: Specific EC2 instance ID to target for inspection (e.g. `i-0123456789abcdef0`). If omitted, DAROGA automatically detects instances in the target region.
-- `--cdp-url <URL>`: *(Default: `http://127.0.0.1:9222`)* The Chrome DevTools Protocol endpoint URL for inspecting active AWS Management Console tabs.
-- `--output <PATH>`: Custom output path for the 23-section migration report. Defaults to `<repo>/EC2_TO_LAMBDA_MIGRATION_REPORT.md`.
+### Git
 
-### Execution & AI Provider Options
-- `--offline`: Runs in **Zero-API Autonomous Heuristic Mode**. Generates all architecture artifacts, build scripts, SAM templates, and reports without making any external AI API calls. Zero cost.
-- `--provider <PROVIDER>`: *(Default: `auto`)* Specifies the AI inference provider. Choices:
-  - `auto`: Automatically detects provider from configured environment variables or model name.
-  - `groq`: Fast cloud inference (Default model: `llama-3.3-70b-versatile`).
-  - `openai`: OpenAI GPT models (Default model: `gpt-4o`).
-  - `gemini`: Google Gemini models (Default model: `gemini-2.0-flash`).
-  - `claude` / `anthropic`: Anthropic Claude models (Default model: `claude-3-5-sonnet-20241022`).
-  - `xai`: xAI Grok models (Default model: `grok-2-latest`).
-  - `custom` / `ollama`: Custom OpenAI-compatible endpoints.
-- `--model <MODEL>`: Explicit model identifier override (e.g. `gpt-4o`, `gemini-2.0-flash`, `llama-3.3-70b-versatile`).
-- `--api-key <KEY>`: Direct API key override (overrides environment variables).
-- `--base-url <URL>`: Base URL override for custom OpenAI-compatible endpoints (Ollama, DeepSeek, vLLM, OpenRouter).
-- `--max-turns <N>`: Maximum autonomous reasoning loops (Default: `30`).
+- `--push` — push the migration branch and open a pull request. Default is off.
+- `--no-push` — same as the default. Kept so scripts can force a local-only run.
+- `--remote NAME` — remote for `--push`. Default `origin`. If that name is not in `git remote`, the commit stays local.
+
+### Audit and cloud
+
+- `--audit-only`, `--audit` — run `DarogaOrchestrator.run_audit` and return. No feature branch, no `--vm-access`, no model, no offline file writes.
+- `--vm-access` — after a full audit, inspect `aws.instances[0]` via SSM and then SSH.
+- `--ssh-key PATH` — PEM or OpenSSH private key. Implies the same guest inspection as `--vm-access`.
+- `--ssh-user USER` — SSH user. Default `ubuntu`. With that default the inspector also tries `ec2-user` and `root`. Any other value is used alone.
+- `--region REGION` — passed to the orchestrator. When omitted, an open AWS Console tab’s `region=` parameter is used, otherwise `AWS_REGION`, `AWS_DEFAULT_REGION`, or `us-east-1`. A region with zero instances and no `--instance-id` is followed by the candidate-region search in `EC2Inspector`.
+- `--instance-id ID` — `DescribeInstances` filter. Disables the multi-region search. Guest inspection still uses `instances[0]` from that result.
+- `--cdp-url URL` — default `http://127.0.0.1:9222`.
+- `--output PATH` — report file. Default `<repo>/EC2_TO_LAMBDA_MIGRATION_REPORT.md`.
+
+### Models
+
+- `--offline` — sets provider `offline` and model `static-analysis-engine` after provider detection, so it wins over `--provider`.
+- `--provider` — choices: `auto`, `groq`, `openai`, `gemini`, `claude`, `anthropic`, `xai`, `ollama`, `offline`, `heuristic`, `custom`. There is no `openrouter`, `vllm`, or `lmstudio` choice. Those endpoints use `--provider custom --base-url ...`.
+- `--model` — overrides the default in the table below.
+- `--api-key` — overrides the environment key for that client.
+- `--base-url` — OpenAI-compatible base URL.
+- `--max-turns N` — default `30` (`DEFAULT_MAX_TURNS`).
+
+#### Defaults when `--provider` is explicit and `--model` is omitted
+
+| Provider | Model |
+|---|---|
+| `groq` | `openai/gpt-oss-120b` |
+| `openai` | `gpt-4o-mini` |
+| `gemini` | `gemini-4-hydrogen` |
+| `claude`, `anthropic` | `claude-3-5-haiku-20241022` |
+| `xai` | `grok-2-latest` |
+| `ollama` | `llama3.1:8b` |
+| `custom` | `default` |
+| `offline`, `heuristic` | `static-analysis-engine` |
+
+#### Defaults when `--provider auto`
+
+| Signal | Provider | Model if `--model` omitted |
+|---|---|---|
+| Model name contains `gpt-oss`, `120b`, or starts with `openai/` | `groq` | the name you passed |
+| Model name contains `claude` | `anthropic` | the name you passed |
+| Model name contains `gemini` | `gemini` | the name you passed |
+| Model name contains `gpt` or starts with `o1` / `o3` | `openai` | the name you passed |
+| Model name contains `grok` | `xai` | the name you passed |
+| Model name contains `llama` or `mixtral` | `groq` | the name you passed |
+| `GROQ_API_KEY` | `groq` | `openai/gpt-oss-120b` |
+| `OPENAI_API_KEY` | `openai` | `gpt-4o` |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini` | `gemini-2.0-flash` |
+| `ANTHROPIC_API_KEY` | `anthropic` | `claude-3-5-sonnet-20241022` |
+| `XAI_API_KEY` | `xai` | `grok-2-latest` |
+| `OPENAI_BASE_URL` | `custom` | `default` |
+| Nothing above | `groq` | `openai/gpt-oss-120b` |
+
+Environment keys are checked in that order. A set `GROQ_API_KEY` wins over a set `OPENAI_API_KEY`.
+
+The argparse epilog in `agent.py` still prints older default model names (`llama-3.3-70b-versatile`, `gpt-4o`, `gemini-4-hydrogen`, `claude-3-5-sonnet-20241022`). The table in this file is what `detect_provider_and_model` actually returns.
 
 ---
 
 ## 3. Environment Variables
 
-| Variable | Purpose |
+| Variable | Use |
 |---|---|
-| `GROQ_API_KEY` | API Key for Groq cloud inference |
-| `OPENAI_API_KEY` | API Key for OpenAI API |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | API Key for Google Gemini API |
-| `ANTHROPIC_API_KEY` | API Key for Anthropic Claude API |
-| `XAI_API_KEY` | API Key for xAI Grok API |
-| `OPENAI_BASE_URL` | Endpoint for custom or local LLM servers (e.g. `http://localhost:11434/v1`) |
-| `AWS_PROFILE` | AWS credentials profile to use for read-only cloud inspection |
-| `AWS_REGION` | Default AWS region for Boto3 queries |
+| `GROQ_API_KEY` | Groq. Also used as the first auto-detect key |
+| `OPENAI_API_KEY` | OpenAI, and a key fallback for `custom` |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Gemini OpenAI-compatible endpoint |
+| `ANTHROPIC_API_KEY` | Claude |
+| `XAI_API_KEY` | xAI |
+| `OPENAI_BASE_URL` | Auto-selects provider `custom` when no vendor key is set. Also the base URL for `custom` when `--base-url` is omitted |
+| `OPENROUTER_API_KEY` | Read by the client for `custom` if `OPENAI_API_KEY` and `--api-key` are empty |
+| `OPENROUTER_BASE_URL` | Last-resort base URL inside the client, after `--base-url` and `OPENAI_BASE_URL`. Default in code if all are empty: `http://localhost:1234/v1` |
+| `OLLAMA_BASE_URL` | Ollama base when `--base-url` is omitted. Default `http://localhost:11434/v1` |
+| `AWS_PROFILE` | Standard boto3 profile selection |
+| `AWS_REGION`, `AWS_DEFAULT_REGION` | Region when CLI `--region` and CDP discovery do not supply one |
+| `NO_COLOR` | Disables ANSI colors in the CLI logger |
 
 ---
 
-## 4. Usage Examples
+## 4. Examples
 
-### Example 1: Standard Autonomous Migration (Local Feature Branch)
+### Local migration branch
+
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service"
 ```
-**Action**: Creates `lambda-migration-<timestamp>`, audits the repo and AWS infrastructure, writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`, serverless adapters, and SAM template, and commits locally to the feature branch. Leaves working branch (`main`) untouched.
 
-### Example 2: Full Autonomous Migration with Automated Remote Push
+Creates `lambda-migration-<timestamp>` from the current branch, writes the report and serverless files, commits, and checks the original branch out again. Remote is unchanged. The transcript includes `git push -u origin <branch>` and a `gh pr create` line you can run yourself.
+
+### Push and pull request
+
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service" --push
 ```
-**Action**: Performs full migration, commits to `lambda-migration-<timestamp>`, pushes to `origin`, and outputs the 1-click GitHub PR link.
 
-### Example 3: Read-Only Audit (No Code Generation or Git Branching)
+Pushes to `origin` and runs `gh pr create --base <starting-branch> --head <migration-branch>`. If `gh` is missing or not logged in, the CLI prints `https://github.com/<owner>/<repo>/pull/new/<branch>` when the remote URL is GitHub, or the GitLab new-merge-request URL when the remote is GitLab.
+
+### Audit only
+
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service" --audit-only
 ```
-**Action**: Scans codebase, queries live AWS EC2 state, inspects browser console, and writes `EC2_TO_LAMBDA_MIGRATION_REPORT.md`. Zero code changes and zero Git branches created.
 
-### Example 4: In-Guest EC2 VM Inspection via SSM or SSH
+Writes the report in the current tree. Because the report is a new untracked file, the working tree is dirty after a successful audit. The next full run deletes that untracked report before the clean-tree check.
+
+### Guest telemetry
+
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service" --vm-access
+daroga "C:\Users\username\Desktop\code\billing-service" --vm-access --ssh-key ~/.ssh/my-key.pem --ssh-user ec2-user
 ```
-**Action**: Runs non-destructive guest VM telemetry extraction via SSM or SSH to verify listening sockets, services, Docker containers, and OS configs.
 
-### Example 4: Zero-API Offline Mode
+Requires a full run and at least one instance from the AWS inspector. SSM is attempted first.
+
+### Offline
+
 ```bash
 daroga "C:\Users\username\Desktop\code\billing-service" --offline
 ```
-**Action**: Runs the deterministic static architecture engine without requiring any LLM API keys or internet connection.
 
-### Example 5: Enabling Live AWS Console Inspection via Chrome CDP
+Skips `UnifiedAIClient`. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the offline writer interprets `target_runtime`.
+
+### Chrome console
+
 ```bash
-# 1. Start Chrome with remote debugging enabled
 chrome.exe --remote-debugging-port=9222
-
-# 2. Log in to AWS Management Console in Chrome
-# 3. Run DAROGA
 daroga "C:\Users\username\Desktop\code\billing-service"
 ```
 
 ```mermaid
 flowchart LR
-    Chrome["Google Chrome<br/>(Logged into AWS Console)<br/>Listening on :9222"] <-->|"Playwright CDP WebSocket"| DAROGA["DAROGA browser_inspector"]
-    DAROGA -->|"Extract Tabs & URLs"| Report["Section 6: AWS Management Console Live State<br/>(EC2_TO_LAMBDA_MIGRATION_REPORT.md)"]
+    Chrome["Chrome on --cdp-url"] -->|"GET /json/version and /json/list"| DAROGA["browser_inspector"]
+    DAROGA -->|"region= when --region is empty"| EC2["ec2_inspector"]
+    DAROGA --> Report["Report section 5 and section 22"]
 ```
 
-**Action**: DAROGA connects to port 9222, identifies active AWS Management Console tabs, and integrates live console settings into Section 6 of the report.
+### Custom OpenAI-compatible endpoint
+
+```bash
+daroga /path/to/app --provider ollama --model llama3.1:8b
+daroga /path/to/app --provider custom --base-url "https://openrouter.ai/api/v1" --model "meta-llama/llama-3.3-70b-instruct" --api-key "sk-or-..."
+daroga /path/to/app --provider custom --base-url "http://localhost:1234/v1" --model "local-model"
+```
 
 ---
 
-## 5. Exit Codes & Troubleshooting
+## 5. Exit Status
 
-| Exit Code | Meaning | Resolution |
-|---|---|---|
-| `0` | Success | Migration or audit completed successfully. |
-| `1` | Validation / Environment Error | Target directory does not exist, uncommitted changes present, or missing dependencies. |
+| Code | When |
+|---|---|
+| `0` | The process returns normally, including audit-only and runs that logged a warning and continued |
+| `1` | The target directory does not exist, the Git tree is dirty, or the `daroga` package cannot be imported in audit-only mode |
 
-### Common Issues:
-- **"Git working tree has uncommitted changes"**: Run `git commit` or `git stash` in your target repository before executing DAROGA.
-- **"Missing Dependency: botocore[crt]"**: Run `pip install "botocore[crt]"` if using AWS SSO login profiles.
-- **"CDP is not listening on 9222"**: Ensure Chrome is started with `--remote-debugging-port=9222`. This is optional; DAROGA will proceed normally with heuristics if Chrome is not open.
+Keyboard interrupt and several codegen exceptions are caught, logged, and followed by the offline writer and the `finally` checkout. They do not by themselves set exit code 1.
+
+### Messages you will see
+
+- **Uncommitted changes.** Commit or stash in the target repo. An untracked report from the last `--audit-only` is removed automatically; other untracked files are not.
+- **CDP is not listening.** The audit continues. The note is stored on the browser finding.
+- **Remote not found.** The local migration commit remains.
+- **No running EC2 instance** for guest inspection. VM step logs a warning and codegen continues without telemetry.
